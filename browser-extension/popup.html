@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+        body {
+            width: 300px;
+            padding: 16px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a1a;
+            color: #fff;
+            margin: 0;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 16px;
+        }
+
+        .header h1 {
+            margin: 0;
+            font-size: 18px;
+            color: #7289da;
+        }
+
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 16px;
+            padding: 8px;
+            border-radius: 6px;
+            background: #2f3136;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #ed4245;
+        }
+
+        .status-dot.connected {
+            background: #3ba55c;
+        }
+
+        .status-text {
+            font-size: 14px;
+        }
+
+        .current-anime {
+            background: #36393f;
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 16px;
+        }
+
+        .current-anime h3 {
+            margin: 0 0 8px 0;
+            font-size: 14px;
+            color: #7289da;
+        }
+
+        .anime-info {
+            font-size: 12px;
+            color: #b9bbbe;
+            line-height: 1.4;
+        }
+
+        .no-anime {
+            text-align: center;
+            color: #72767d;
+            font-size: 14px;
+            padding: 20px;
+        }
+
+        .buttons {
+            display: flex;
+            gap: 8px;
+        }
+
+        button {
+            flex: 1;
+            padding: 8px 12px;
+            border: none;
+            border-radius: 4px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .btn-primary {
+            background: #7289da;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #677bc4;
+        }
+
+        .btn-secondary {
+            background: #4f545c;
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background: #5d6269;
+        }
+
+        .instructions {
+            font-size: 11px;
+            color: #72767d;
+            text-align: center;
+            margin-top: 12px;
+            line-height: 1.3;
+        }
+
+        .instructions a {
+            color: #7289da;
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🎌 Anime Rich Presence</h1>
+    </div>
+
+    <div class="status">
+        <div class="status-dot" id="statusDot"></div>
+        <div class="status-text" id="statusText">Checking connection...</div>
+    </div>
+
+    <div id="currentAnime"></div>
+
+    <div class="buttons">
+        <button class="btn-secondary" id="clearBtn">Clear Presence</button>
+        <button class="btn-primary" id="refreshBtn">Refresh</button>
+    </div>
+
+    <div class="instructions">
+        Make sure the <a href="#" id="downloadLink">desktop app</a> is running for Discord integration to work.
+    </div>
+
+    <script src="popup.js"></script>
+</body>
+</html>
