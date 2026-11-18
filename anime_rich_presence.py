@@ -82,6 +82,8 @@ class EnhancedAnimeRichPresence:
             StatusDisplayType.DETAILS,
         )
         self.activity_name = os.environ.get("DISCORD_ACTIVITY_NAME", "Anime").strip() or None
+        self.use_progress_bar = os.environ.get("DISCORD_PROGRESS_BAR", "true").strip().lower() in ("1", "true", "yes")
+        self.session_start_time = int(time.time())
 
         self.rpc = None
         self.rpc_loop = None
@@ -450,7 +452,7 @@ class EnhancedAnimeRichPresence:
                 'small_text': small_text,
             }
 
-            if not privacy_mode and show_progress and is_playing and not is_paused and progress is not None:
+            if self.use_progress_bar and not privacy_mode and show_progress and is_playing and not is_paused and progress is not None and duration > 0:
                 calculated_start = int(time.time() - progress)
                 if (self.current_start_time is None or
                     abs(self.current_start_time - calculated_start) > 3 or
@@ -459,10 +461,11 @@ class EnhancedAnimeRichPresence:
                     self.last_discord_raw.get('episode') != episode):
                     self.current_start_time = calculated_start
                 discord_activity['start'] = self.current_start_time
-                if duration > 0:
-                    discord_activity['end'] = self.current_start_time + int(duration)
+                discord_activity['end'] = self.current_start_time + int(duration)
             else:
                 self.current_start_time = None
+                # Keep persistent session timestamp when paused so Discord's timer never resets to 0:00
+                discord_activity['start'] = self.session_start_time
 
             if not privacy_mode:
                 thumbnail_url = activity_data.get('coverArt') or self.get_anime_thumbnail(title)
@@ -520,8 +523,8 @@ class EnhancedAnimeRichPresence:
         if show_episode and activity_data.get('episode') is not None and not privacy_mode:
             parts.append(f"Episode {activity_data['episode']}")
 
-        # Show text progress fallback when paused (no live bar) or when duration isn't available yet
-        has_native_bar = (not is_paused_state) and bool(activity_data.get('duration'))
+        # Show text progress fallback when paused, using persistent timer, or when duration isn't available yet
+        has_native_bar = self.use_progress_bar and (not is_paused_state) and bool(activity_data.get('duration'))
         if show_progress and not has_native_bar and activity_data.get('progress') is not None and activity_data.get('duration') and not privacy_mode:
             progress_time = self.format_time(activity_data['progress'])
             duration_time = self.format_time(activity_data['duration'])
