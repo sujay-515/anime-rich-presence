@@ -82,8 +82,8 @@ class EnhancedAnimeRichPresence:
             StatusDisplayType.DETAILS,
         )
         self.activity_name = os.environ.get("DISCORD_ACTIVITY_NAME", "Anime").strip() or None
-        self.use_progress_bar = os.environ.get("DISCORD_PROGRESS_BAR", "true").strip().lower() in ("1", "true", "yes")
-        self.session_start_time = int(time.time())
+        self.use_progress_bar = os.environ.get("DISCORD_PROGRESS_BAR", "false").strip().lower() in ("1", "true", "yes")
+        self.session_start_time = None
 
         self.rpc = None
         self.rpc_loop = None
@@ -175,6 +175,7 @@ class EnhancedAnimeRichPresence:
                     self.current_activity = None
                     self.last_discord_raw = None
                     self.current_start_time = None
+                    self.session_start_time = None
                     self.last_logged_state = None
 
                 self.rpc_queue.put(('clear', None))
@@ -451,6 +452,9 @@ class EnhancedAnimeRichPresence:
                 'small_image': small_image,
                 'small_text': small_text,
             }
+
+            if self.session_start_time is None:
+                self.session_start_time = int(time.time())
 
             if self.use_progress_bar and not privacy_mode and show_progress and is_playing and not is_paused and progress is not None and duration > 0:
                 calculated_start = int(time.time() - progress)
