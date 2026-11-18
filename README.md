@@ -1,5 +1,7 @@
 # 🎌 Anime Rich Presence for Discord
 
+> **Note:** Just a fun project I worked on! Still a work in progress in places as streaming sites change, feel free to explore or tinker with it.
+
 Show what anime you're watching in real-time on Discord with rich embeds, dynamic thumbnails, episode info, and interactive playback timers.
 
 Supported sites:
@@ -41,7 +43,7 @@ Make sure you have Python 3.8+ installed:
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/<your-username>/anime-rich-presence.git
+git clone https://github.com/sujay-515/anime-rich-presence.git
 cd anime-rich-presence
 
 # 2. (Optional) Configure environment variables
