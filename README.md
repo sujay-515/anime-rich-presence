@@ -29,7 +29,7 @@ Supported sites:
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications).
 2. Click **New Application**.
 3. Name it what you want Discord to display as your activity (for example, naming it **"Watching"** will make your Discord status display as **"Playing Watching"** or **"Watching <Anime Name>"**).
-4. *(Optional)* Copy your **Application ID** and paste it into `self.client_id` in `anime_rich_presence.py` if you prefer your own custom client.
+4. *(Optional)* Copy your **Application ID**, duplicate `.env.example` as `.env`, and set `DISCORD_CLIENT_ID=<your-id>` if you prefer your own custom client.
 
 ![Discord Status Example](screenshots/app_name.png)
 
@@ -44,12 +44,15 @@ Make sure you have Python 3.8+ installed:
 git clone https://github.com/<your-username>/anime-rich-presence.git
 cd anime-rich-presence
 
-# 2. Create virtual environment & install dependencies
+# 2. (Optional) Configure environment variables
+cp .env.example .env
+
+# 3. Create virtual environment & install dependencies
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 
-# 3. Start the application
+# 4. Start the application
 ./run.sh
 ```
 

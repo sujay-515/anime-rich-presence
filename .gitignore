@@ -1,7 +1,12 @@
+# Environment variables
+.env
+.env.*
+!.env.example
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
-*.class
+*$py.class
 
 # C extensions
 *.so
@@ -28,6 +33,16 @@ venv/
 .venv/
 env/
 ENV/
+
+# Logs & Archives
+*.log
+*.zip
+
+# IDEs / Editors
+.vscode/
+.idea/
+*.swp
+*.swo
 
 # OS metadata
 .DS_Store

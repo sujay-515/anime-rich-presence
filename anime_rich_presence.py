@@ -24,17 +24,41 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def load_env_file(env_path=".env"):
+    """Load key=value pairs from a local .env file into os.environ if present."""
+    full_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), env_path)
+    if not os.path.exists(full_path):
+        return
+    try:
+        with open(full_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except Exception as e:
+        logger.warning(f"Could not read .env file: {e}")
+
+
+load_env_file()
+
+
 class EnhancedAnimeRichPresence:
     def __init__(self, verbose=False):
-        self.client_id = "1421704557830078464"
+        self.client_id = os.environ.get("DISCORD_CLIENT_ID", "1421704557830078464")
         self.rpc = None
         self.is_connected = False
         self.is_connecting = False
         self.current_activity = None
         self.session_start_time = int(time.time())
         self.current_start_time = None
-        self.host = 'localhost'
-        self.port = 3000
+        self.host = os.environ.get("HOST", "localhost")
+        self.port = int(os.environ.get("PORT", "3000"))
         self.verbose = verbose
 
         self.thumbnail_cache = {}
