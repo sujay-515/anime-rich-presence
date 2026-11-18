@@ -277,7 +277,7 @@ class PopupController {
             currentAnime.innerHTML = `
                 <div class="glass-card no-anime">
                     No anime detected
-                    <small>Start watching on Miruro or AnimePahe</small>
+                    <small>Open Re:Anime, KotoPlay, Miruro, Gotaku, or AnimePahe</small>
                 </div>
             `;
         }

@@ -1,9 +1,15 @@
 // background.js - MV3-safe state manager & Discord bridge
 
-const SUPPORTED_SITE_REGEX = /miruro|animepahe/i;
+const SUPPORTED_SITE_REGEX = /(?:^|\.)(?:miruro|reanime|kotoplay|gotaku|animepahe)\./i;
 
 function isSupportedAnimeUrl(url) {
-    return Boolean(url && /^https?:\/\//i.test(url) && SUPPORTED_SITE_REGEX.test(url));
+    if (!url || !/^https?:\/\//i.test(url)) return false;
+    try {
+        const hostname = new URL(url).hostname;
+        return SUPPORTED_SITE_REGEX.test(hostname);
+    } catch (e) {
+        return false;
+    }
 }
 
 class BackgroundService {
@@ -56,11 +62,15 @@ class BackgroundService {
 
         // Inject into main frame and dynamically spawned player iframes ONLY on supported anime tabs
         if (chrome.webNavigation) {
-            chrome.webNavigation.onCompleted.addListener((details) => {
+            const onNav = (details) => {
                 if (!details || details.tabId < 0) return;
                 if (details.url && (details.url === 'about:blank' || details.url.startsWith('chrome'))) return;
                 this.injectIfSupported(details.tabId, details.frameId);
-            });
+            };
+            chrome.webNavigation.onCompleted.addListener(onNav);
+            if (chrome.webNavigation.onHistoryStateUpdated) {
+                chrome.webNavigation.onHistoryStateUpdated.addListener(onNav);
+            }
         }
 
         chrome.tabs.onActivated.addListener(() => {

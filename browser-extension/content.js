@@ -1,4 +1,5 @@
 // content.js - SPA-safe anime metadata & video playback detector
+// Supports Top 5 EverythingMoe sites: Re:Anime, KotoPlay, Miruro, Gotaku & AnimePahe
 
 (() => {
     if (window.__ARP_LOADED__) return;
@@ -8,12 +9,12 @@
 
     function cleanAnimeTitle(title) {
         if (!title) return '';
-        let cleaned = title;
-        cleaned = cleaned.replace(/\[\d+p\]/gi, '');
-        cleaned = cleaned.replace(/\b(Dual[- ]Audio|Uncensored|BD|Blu[- ]Ray|Multi[- ]Subs|Batch)\b/gi, '');
-        cleaned = cleaned.replace(/\(\s*\)|\[\s*\]/g, '');
-        cleaned = cleaned.replace(/\s+/g, ' ');
-        return cleaned.trim();
+        return title
+            .replace(/\[\d+p\]/gi, '')
+            .replace(/\b(Dual[- ]Audio|Uncensored|BD|Blu[- ]Ray|Multi[- ]Subs|Batch)\b/gi, '')
+            .replace(/\(\s*\)|\[\s*\]/g, '')
+            .replace(/\s+/g, ' ')
+            .trim();
     }
 
     function formatSlugTitle(slug) {
@@ -21,8 +22,33 @@
         return slug
             .split(/[-_]+/)
             .filter(Boolean)
-            .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+            .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
             .join(' ');
+    }
+
+    function firstText(selectors) {
+        for (const sel of selectors) {
+            const el = document.querySelector(sel);
+            if (el && el.textContent && el.textContent.trim()) {
+                return el.textContent.trim();
+            }
+        }
+        return null;
+    }
+
+    function firstImgSrc(selectors) {
+        for (const sel of selectors) {
+            const img = document.querySelector(sel);
+            if (img && img.src && !img.src.includes('default') && !img.src.includes('icon')) {
+                return img.src;
+            }
+        }
+        return null;
+    }
+
+    function getThemeColor() {
+        const meta = document.querySelector('meta[name="theme-color"]');
+        return meta && meta.content ? meta.content.trim() : null;
     }
 
     function findVideoElement(root = document) {
@@ -35,7 +61,6 @@
             }
             if (videos.length > 0) return videos[0];
 
-            // Search open Shadow DOM roots
             const all = root.querySelectorAll('*');
             for (const el of all) {
                 if (el.shadowRoot) {
@@ -44,7 +69,6 @@
                 }
             }
 
-            // Search accessible same-origin iframes
             const iframes = root.querySelectorAll('iframe');
             for (const iframe of iframes) {
                 try {
@@ -63,9 +87,7 @@
         if (!chrome.runtime || !chrome.runtime.id) return;
         try {
             chrome.runtime.sendMessage(payload, () => {
-                if (chrome.runtime.lastError) {
-                    // Ignore transient wake-up errors
-                }
+                if (chrome.runtime.lastError) {}
             });
         } catch (e) {}
     }
@@ -75,31 +97,22 @@
     // ==========================================
     if (isTopFrame) {
         const host = window.location.hostname.toLowerCase();
-        const isMiruro = host.includes('miruro');
-        const isAnimePahe = host.includes('animepahe');
 
-        if (!isMiruro && !isAnimePahe) {
-            return;
-        }
-
-        console.log(`Anime Rich Presence: Monitoring anime page on ${host}`);
-
-        const initialPathname = window.location.pathname;
-        let initialJsonLdName = null;
-        let lastUrl = window.location.href;
-        let lastMetadata = null;
-        let lastPlayback = null;
-        let attachedVideo = null;
-
-        function readJsonLd() {
+        function readJsonLd(ignoreName) {
             const scripts = document.querySelectorAll('script[type="application/ld+json"]');
             for (const script of scripts) {
                 try {
                     const data = JSON.parse(script.textContent);
-                    if (data && data.name && typeof data.name === 'string') {
-                        const candidate = cleanAnimeTitle(data.name);
-                        if (candidate && candidate.toLowerCase() !== 'miruro') {
-                            return { name: candidate, image: data.image || null };
+                    if (!data) continue;
+                    const rawName = (data.partOfSeries && data.partOfSeries.name) || data.name;
+                    if (rawName && typeof rawName === 'string') {
+                        const candidate = cleanAnimeTitle(rawName);
+                        if (candidate && candidate.toLowerCase() !== ignoreName) {
+                            return {
+                                name: candidate,
+                                episode: data.episodeNumber ? parseInt(data.episodeNumber, 10) : null,
+                                image: data.image || data.thumbnailUrl || null
+                            };
                         }
                     }
                 } catch (e) {}
@@ -107,23 +120,89 @@
             return null;
         }
 
-        // Record SSR initial JSON-LD so we can detect stale JSON-LD after SPA navigation
-        const initialLd = readJsonLd();
-        if (initialLd) {
-            initialJsonLdName = initialLd.name;
+        const initialPathname = window.location.pathname;
+        const initialLd = readJsonLd('miruro');
+        const initialJsonLdName = initialLd ? initialLd.name : null;
+
+        function extractReAnime() {
+            if (!window.location.pathname.includes('/watch')) return null;
+
+            const ld = readJsonLd('re:anime');
+            let title = firstText([
+                'nav[aria-label="Breadcrumb"] a[data-anime-title]',
+                'h3.line-clamp-2'
+            ]);
+            if (!title && ld) title = ld.name;
+            if (!title && document.title) {
+                const m = document.title.match(/^(.+?)\s*-\s*Episode\s+\d+/i);
+                if (m) title = m[1];
+            }
+            if (!title) {
+                const parts = window.location.pathname.split('/').filter(Boolean);
+                if (parts.length >= 2) {
+                    title = formatSlugTitle(parts[1].replace(/-[a-z0-9]{6}$/i, ''));
+                }
+            }
+            title = cleanAnimeTitle(title);
+            if (!title || /re:?anime/i.test(title)) return null;
+
+            let episode = null;
+            const epParam = window.location.search.match(/[?&]ep=(\d+)/i);
+            if (epParam) {
+                episode = parseInt(epParam[1], 10);
+            } else {
+                const crumb = firstText(['nav[aria-label="Breadcrumb"] span', 'a.ep-card.is-playing']);
+                const epMatch = (crumb || document.title).match(/(?:Episode\s+|^)(\d+)/i);
+                if (epMatch) episode = parseInt(epMatch[1], 10);
+                else if (ld && ld.episode) episode = ld.episode;
+            }
+
+            const coverArt = firstImgSrc(['img[src*="anilistcdn"]']) || (ld && ld.image) || null;
+            return { title, episode, site: 'Re:Anime', url: window.location.href, coverArt, themeColor: getThemeColor() };
         }
 
-        function extractMiruroMetadata() {
-            if (!window.location.pathname.includes('/watch')) {
-                return null;
+        function extractKotoPlay() {
+            if (!window.location.pathname.includes('/watch')) return null;
+
+            let title = null;
+            const h1 = document.querySelector('h1.at-wtitle');
+            if (h1) {
+                const clone = h1.cloneNode(true);
+                const epSpan = clone.querySelector('.ep');
+                if (epSpan) epSpan.remove();
+                title = clone.textContent.replace(/\s*[—–-]\s*Episode\s+\d+.*$/i, '').trim();
             }
+            if (!title && document.title) {
+                title = document.title
+                    .replace(/^Watch\s+/i, '')
+                    .replace(/\s+Episode\s+\d+.*$/i, '')
+                    .replace(/\s*\|\s*KotoPlay.*$/i, '');
+            }
+            title = cleanAnimeTitle(title);
+            if (!title || title.toLowerCase() === 'kotoplay') return null;
+
+            let episode = null;
+            const urlEp = window.location.href.match(/\/watch\/[^/]+\/(\d+)|[?&]ep=(\d+)/i);
+            if (urlEp) {
+                episode = parseInt(urlEp[1] || urlEp[2], 10);
+            } else {
+                const epText = firstText(['h1.at-wtitle .ep', '.at-ep.active .et']) || document.title;
+                const m = epText.match(/Episode\s*(\d+)/i);
+                if (m) episode = parseInt(m[1], 10);
+            }
+
+            const coverArt = firstImgSrc(['img.d-poster', 'img[src*="anilistcdn"]']);
+            return { title, episode, site: 'KotoPlay', url: window.location.href, coverArt, themeColor: getThemeColor() };
+        }
+
+        function extractMiruro() {
+            if (!window.location.pathname.includes('/watch')) return null;
 
             let title = null;
             let coverArt = null;
             const navigatedInSpa = window.location.pathname !== initialPathname;
 
-            // 1. JSON-LD metadata schema (skip if SPA navigated away and JSON-LD is still SSR initial value)
-            const ld = readJsonLd();
+            const ld = readJsonLd('miruro');
             if (ld) {
                 const isStaleLd = navigatedInSpa && initialJsonLdName && ld.name === initialJsonLdName;
                 if (!isStaleLd) {
@@ -132,63 +211,34 @@
                 }
             }
 
-            // 2. URL slug: /watch/<id>/<slug>
             if (!title) {
                 const pathParts = window.location.pathname.split('/').filter(Boolean);
                 if (pathParts.length >= 3 && pathParts[0] === 'watch') {
                     const candidate = formatSlugTitle(pathParts[2]);
-                    if (candidate && candidate.toLowerCase() !== 'miruro') {
-                        title = candidate;
-                    }
+                    if (candidate && candidate.toLowerCase() !== 'miruro') title = candidate;
                 }
             }
 
-            // 3. OpenGraph / Twitter meta tags (only if not navigated away from initial SSR page)
             if (!title && !navigatedInSpa) {
                 const meta = document.querySelector('meta[property="og:title"], meta[name="twitter:title"]');
                 if (meta && meta.content) {
-                    const candidate = cleanAnimeTitle(
-                        meta.content.replace(/^Watch\s+/i, '').replace(/\s*[-|]\s*Miruro.*$/i, '')
-                    );
-                    if (candidate && candidate.toLowerCase() !== 'miruro') {
-                        title = candidate;
-                    }
+                    const candidate = cleanAnimeTitle(meta.content.replace(/^Watch\s+/i, '').replace(/\s*[-|]\s*Miruro.*$/i, ''));
+                    if (candidate && candidate.toLowerCase() !== 'miruro') title = candidate;
                 }
             }
 
-            // 4. Common DOM title selectors
             if (!title) {
-                const selectors = ['h1[class*="title"]', '.anime-title', '.series-title', 'h1'];
-                for (const sel of selectors) {
-                    const el = document.querySelector(sel);
-                    if (el && el.textContent.trim()) {
-                        let text = el.textContent.trim();
-                        text = text.replace(/^Watch\s+/i, '').replace(/\s*[-|]\s*(Miruro|Episode).*$/i, '');
-                        const candidate = cleanAnimeTitle(text);
-                        if (candidate && candidate.toLowerCase() !== 'miruro') {
-                            title = candidate;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // 5. Document title fallback
-            if (!title) {
-                const pageTitle = document.title;
-                if (pageTitle && pageTitle.toLowerCase() !== 'miruro') {
+                const raw = firstText(['h1[class*="title"]', '.anime-title', '.series-title', 'h1']) || document.title;
+                if (raw) {
                     const candidate = cleanAnimeTitle(
-                        pageTitle.replace(/^Watch\s+/i, '').replace(/\s*[-|]\s*Miruro.*$/i, '')
+                        raw.replace(/^Watch\s+/i, '').replace(/\s*[-|]\s*(Miruro|Episode).*$/i, '')
                     );
-                    if (candidate && candidate.toLowerCase() !== 'miruro') {
-                        title = candidate;
-                    }
+                    if (candidate && candidate.toLowerCase() !== 'miruro') title = candidate;
                 }
             }
 
             if (!title) return null;
 
-            // Episode extraction: URL first, then active "Episode X" label (avoids sidebar "EP X" thumbnails)
             let episode = null;
             const epUrlMatch = window.location.href.match(/(?:[?&]ep=|[/-]ep-|\/episode\/)(\d+)/i);
             if (epUrlMatch) {
@@ -196,35 +246,45 @@
             } else {
                 const bodyText = document.body ? document.body.innerText : '';
                 const epMatch = bodyText.match(/\bEpisode\s+(\d+)\b/i);
-                if (epMatch) {
-                    episode = parseInt(epMatch[1], 10);
-                }
+                if (epMatch) episode = parseInt(epMatch[1], 10);
             }
 
             if (!coverArt) {
-                const img = document.querySelector('img[class*="cover"], img[class*="poster"], .poster img');
-                if (img && img.src && !img.src.includes('default') && !img.src.includes('icon')) {
-                    coverArt = img.src;
-                }
+                coverArt = firstImgSrc(['img[class*="cover"]', 'img[class*="poster"]', '.poster img']);
             }
 
-            const themeMeta = document.querySelector('meta[name="theme-color"]');
-            const themeColor = themeMeta && themeMeta.content ? themeMeta.content.trim() : null;
-
-            return {
-                title,
-                episode,
-                site: 'Miruro',
-                url: window.location.href,
-                coverArt,
-                themeColor
-            };
+            return { title, episode, site: 'Miruro', url: window.location.href, coverArt, themeColor: getThemeColor() };
         }
 
-        function extractAnimePaheMetadata() {
-            if (!window.location.pathname.includes('/play/')) {
-                return null;
+        function extractGotaku() {
+            const isWatch = window.location.pathname.includes('/title/') &&
+                (window.location.search.includes('ep=') || document.querySelector('iframe.cc'));
+            if (!isWatch) return null;
+
+            let title = firstText([
+                'nav.pn a[data-status="active"]',
+                'nav a[href^="/title/"]',
+                'h3.dg'
+            ]);
+            if (!title && document.title) {
+                title = document.title
+                    .replace(/\s*[–—-]\s*Episode\s+\d+.*$/i, '')
+                    .replace(/\s*·\s*Gotaku.*$/i, '');
             }
+            title = cleanAnimeTitle(title);
+            if (!title || title.toLowerCase() === 'gotaku') return null;
+
+            let episode = null;
+            const epText = firstText(['nav.pn span.ud', 'button.f.l3 span.a_']) || document.title;
+            const m = epText.match(/(?:Episode|EP)\s*(\d+)/i);
+            if (m) episode = parseInt(m[1], 10);
+
+            const coverArt = firstImgSrc(['img[src*="anilistcdn"]']);
+            return { title, episode, site: 'Gotaku', url: window.location.href, coverArt, themeColor: getThemeColor() };
+        }
+
+        function extractAnimePahe() {
+            if (!window.location.pathname.includes('/play/')) return null;
 
             let title = null;
             let episode = null;
@@ -237,7 +297,8 @@
                     title = cleanAnimeTitle(match[1]);
                     episode = parseInt(match[2], 10);
                 } else {
-                    title = cleanAnimeTitle(text);
+                    const link = theatreH1.querySelector('a');
+                    title = cleanAnimeTitle(link ? link.textContent : text);
                 }
             }
 
@@ -250,28 +311,47 @@
                 }
             }
 
+            if (!episode) {
+                const epMenuText = firstText(['#episodeMenu', '.episode-menu button']) || document.title;
+                const m = epMenuText.match(/(?:Episode|Ep\.?)\s*(\d+)/i);
+                if (m) episode = parseInt(m[1], 10);
+            }
+
             if (!title) return null;
 
-            return {
-                title,
-                episode,
-                site: 'AnimePahe',
-                url: window.location.href,
-                coverArt: null
-            };
+            const ogImg = document.querySelector('meta[property="og:image"]');
+            const coverArt = firstImgSrc(['.anime-poster img', 'img[src*="animepahe"]']) || (ogImg ? ogImg.content : null);
+            return { title, episode, site: 'AnimePahe', url: window.location.href, coverArt, themeColor: getThemeColor() };
         }
+
+        const SITE_TABLE = [
+            { pattern: /(?:^|\.)reanime\./i, extract: extractReAnime },
+            { pattern: /(?:^|\.)kotoplay\./i, extract: extractKotoPlay },
+            { pattern: /(?:^|\.)miruro\./i, extract: extractMiruro },
+            { pattern: /(?:^|\.)gotaku\./i, extract: extractGotaku },
+            { pattern: /(?:^|\.)animepahe\./i, extract: extractAnimePahe },
+        ];
+
+        const matchedSite = SITE_TABLE.find(entry => entry.pattern.test(host));
+        if (!matchedSite) return;
+
+        console.log(`Anime Rich Presence: Monitoring anime page on ${host}`);
+
+        let lastUrl = window.location.href;
+        let lastMetadata = null;
+        let lastPlayback = null;
+        let attachedVideo = null;
 
         function checkTopPage(forceSync = false) {
             if (!chrome.runtime || !chrome.runtime.id) return;
 
-            // Detect SPA URL navigation
             if (window.location.href !== lastUrl) {
                 lastUrl = window.location.href;
                 lastPlayback = null;
                 forceSync = true;
             }
 
-            const metadata = isMiruro ? extractMiruroMetadata() : extractAnimePaheMetadata();
+            const metadata = matchedSite.extract();
 
             if (!metadata) {
                 if (lastMetadata) {
@@ -321,7 +401,7 @@
                     lastPlayback = playback;
                 }
             } else if (metadataChanged) {
-                console.log('Top Frame: Detected anime metadata:', metadata.title, 'Ep:', metadata.episode);
+                console.log(`Top Frame (${metadata.site}): Detected`, metadata.title, 'Ep:', metadata.episode);
                 safeSendMessage({
                     type: 'ANIME_METADATA_UPDATE',
                     data: metadata
@@ -353,7 +433,6 @@
             const video = findVideoElement();
             if (!video) return;
 
-            // Ignore empty placeholder video tags until media metadata loads
             if (!video.currentSrc && !video.src && !video.duration) return;
 
             if (attachedVideo !== video) {

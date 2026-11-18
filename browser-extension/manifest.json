@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Anime Rich Presence",
-  "version": "2.1.0",
-  "description": "Show what anime you're watching on Discord with Rich Presence for Miruro & AnimePahe",
+  "version": "2.2.0",
+  "description": "Show what anime you're watching on Discord with Rich Presence (Re:Anime, KotoPlay, Miruro, Gotaku & AnimePahe)",
   "permissions": [
     "activeTab",
     "storage",

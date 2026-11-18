@@ -101,9 +101,14 @@ class EnhancedAnimeRichPresence:
 
         self.flask_app = Flask(__name__)
         CORS(self.flask_app, origins=[
+            "https://reanime.cz",
+            "https://kotoplay.to",
             "https://miruro.tv",
             "https://miruro.to",
             "https://miruro.cx",
+            "https://www.miruro.cx",
+            "https://gotaku.to",
+            "https://animepahe.pw",
             "chrome-extension://*",
             "moz-extension://*"
         ])
@@ -568,7 +573,7 @@ def main():
     print("• Persistent green timestamp")
     print("• Progress time display")
     print("• Dynamic anime thumbnails from AniList (cached)")
-    print("• Multi-site support: Miruro & AnimePahe")
+    print("• Multi-site support: Re:Anime, KotoPlay, Miruro, Gotaku & AnimePahe")
     print("• Thread-safe Discord RPC worker with active heartbeat")
     print("=" * 50)
 
