@@ -1,69 +1,72 @@
-// background.js - Unified background service worker
+// background.js - Universal state manager & Discord bridge
 
 class BackgroundService {
     constructor() {
         this.serverUrl = 'http://localhost:3000';
         this.currentActivity = null;
-        this.tabStates = {};
+        this.tabStates = {}; // tabId -> { metadata: null, playback: null }
         this.init();
     }
 
     init() {
-        console.log('Anime Rich Presence: Unified background service started');
+        console.log('Anime Rich Presence: Background service worker started');
 
-        // Message handler
+        // Listen for messages from content scripts (top frame and iframes)
         chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             this.handleMessage(message, sender, sendResponse);
             return true;
         });
 
-        // Tab closed cleanup
+        // Tab removed cleanup
         chrome.tabs.onRemoved.addListener(async (tabId) => {
             if (this.tabStates[tabId]) {
-                const wasCurrent = this.currentActivity && this.tabStates[tabId].title === this.currentActivity.title;
                 delete this.tabStates[tabId];
-                if (wasCurrent) {
+                if (Object.keys(this.tabStates).length === 0) {
                     await this.clearActivity();
+                } else {
+                    const remainingTabId = Object.keys(this.tabStates)[0];
+                    await this.syncPresence(remainingTabId);
                 }
             }
         });
 
-        // Settings change listener - instantly re-sync presence with new toggles
+        // Tab updated / navigated
+        chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
+            if (changeInfo.url) {
+                const isSupported = /miruro|animepahe/i.test(changeInfo.url);
+                if (!isSupported && this.tabStates[tabId]) {
+                    delete this.tabStates[tabId];
+                    if (Object.keys(this.tabStates).length === 0) {
+                        await this.clearActivity();
+                    }
+                }
+            }
+        });
+
+        // Re-sync presence when user changes display settings
         chrome.storage.onChanged.addListener(async (changes, areaName) => {
-            if (areaName === 'local' && this.currentActivity) {
+            if (areaName === 'local') {
                 const keys = ['privacyMode', 'showEpisode', 'showProgress', 'showSiteBadge'];
-                if (keys.some(k => k in changes)) {
-                    await this.updateActivity(this.currentActivity);
+                if (keys.some(k => k in changes) && this.currentActivity) {
+                    await this.sendToServer(this.currentActivity);
                 }
             }
         });
 
-        // Programmatic injection on install or extension reload
+        // Programmatic injection on install or update for all open anime tabs
         chrome.runtime.onInstalled.addListener(async () => {
-            console.log('Extension installed/reloaded. Injecting into open anime tabs...');
+            console.log('Extension loaded/updated. Injecting into all open anime tabs...');
             try {
-                const tabs = await chrome.tabs.query({
-                    url: [
-                        "*://*.miruro.tv/*",
-                        "*://*.miruro.to/*",
-                        "*://*.miruro.cx/*",
-                        "*://*.animepahe.pw/*",
-                        "*://*.animepahe.com/*",
-                        "*://*.animepahe.ru/*",
-                        "*://*.animepahe.si/*",
-                        "*://*.animepahe.org/*",
-                        "*://*.kwik.si/*",
-                        "*://*.kwik.cx/*"
-                    ]
-                });
-
+                const tabs = await chrome.tabs.query({});
                 for (const tab of tabs) {
-                    try {
-                        await chrome.scripting.executeScript({
-                            target: { tabId: tab.id, allFrames: true },
-                            files: ['content.js']
-                        });
-                    } catch (err) {}
+                    if (tab.url && (tab.url.includes('miruro') || tab.url.includes('animepahe'))) {
+                        try {
+                            await chrome.scripting.executeScript({
+                                target: { tabId: tab.id, allFrames: true },
+                                files: ['content.js']
+                            });
+                        } catch (e) {}
+                    }
                 }
             } catch (e) {}
         });
@@ -90,39 +93,50 @@ class BackgroundService {
     }
 
     async handleMessage(message, sender, sendResponse) {
-        const tabId = sender.tab ? sender.tab.id : null;
+        const tabId = sender.tab ? sender.tab.id : 'default';
 
         try {
             switch (message.type) {
                 case 'ANIME_UPDATE':
-                    if (tabId) {
-                        this.tabStates[tabId] = message.data;
-                    }
-                    await this.updateActivity(message.data);
+                    if (!this.tabStates[tabId]) this.tabStates[tabId] = {};
+                    this.tabStates[tabId].metadata = {
+                        title: message.data.title,
+                        episode: message.data.episode,
+                        site: message.data.site,
+                        url: message.data.url,
+                        coverArt: message.data.coverArt
+                    };
+                    this.tabStates[tabId].playback = {
+                        progress: message.data.progress,
+                        duration: message.data.duration,
+                        isPlaying: message.data.isPlaying,
+                        isPaused: message.data.isPaused
+                    };
+                    await this.syncPresence(tabId);
                     sendResponse({ success: true });
                     break;
 
                 case 'ANIME_METADATA_UPDATE':
-                    if (tabId) {
-                        this.tabStates[tabId] = Object.assign(this.tabStates[tabId] || {}, message.data);
-                        await this.checkMergedTabUpdate(tabId);
-                    }
+                    if (!this.tabStates[tabId]) this.tabStates[tabId] = {};
+                    this.tabStates[tabId].metadata = message.data;
+                    await this.syncPresence(tabId);
                     sendResponse({ success: true });
                     break;
 
                 case 'ANIME_PLAYBACK_UPDATE':
-                    if (tabId) {
-                        this.tabStates[tabId] = Object.assign(this.tabStates[tabId] || {}, message.data);
-                        await this.checkMergedTabUpdate(tabId);
-                    }
+                    if (!this.tabStates[tabId]) this.tabStates[tabId] = {};
+                    this.tabStates[tabId].playback = message.data;
+                    await this.syncPresence(tabId);
                     sendResponse({ success: true });
                     break;
 
                 case 'ANIME_CLEAR':
-                    if (tabId && this.tabStates[tabId]) {
+                    if (this.tabStates[tabId]) {
                         delete this.tabStates[tabId];
                     }
-                    await this.clearActivity();
+                    if (Object.keys(this.tabStates).length === 0) {
+                        await this.clearActivity();
+                    }
                     sendResponse({ success: true });
                     break;
 
@@ -146,34 +160,36 @@ class BackgroundService {
         }
     }
 
-    async checkMergedTabUpdate(tabId) {
+    async syncPresence(tabId) {
         const state = this.tabStates[tabId];
-        if (!state || !state.title) return;
+        if (!state || !state.metadata || !state.metadata.title) return;
 
-        // If playback info is present (progress and duration)
-        if (state.progress !== undefined && state.duration !== undefined) {
-            await this.updateActivity(state);
-        }
-    }
-
-    async updateActivity(activityData) {
-        if (!activityData || !activityData.title) return;
+        const metadata = state.metadata;
+        const playback = state.playback || {
+            progress: 0,
+            duration: 0,
+            isPlaying: true,
+            isPaused: false
+        };
 
         const settings = await this.getSettings();
-        const payload = Object.assign({}, activityData, settings, {
+        const activityData = Object.assign({}, metadata, playback, settings, {
             timestamp: Date.now()
         });
 
+        this.currentActivity = activityData;
+        await this.sendToServer(activityData);
+    }
+
+    async sendToServer(activityData) {
+        if (!activityData || !activityData.title) return;
+
         try {
-            const res = await fetch(`${this.serverUrl}/update`, {
+            await fetch(`${this.serverUrl}/update`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
+                body: JSON.stringify(activityData)
             });
-
-            if (res.ok) {
-                this.currentActivity = payload;
-            }
         } catch (err) {
             console.warn('Backend server unreachable:', err.message);
         }

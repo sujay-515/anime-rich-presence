@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Anime Rich Presence",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Show what anime you're watching on Discord with Rich Presence for Miruro & AnimePahe",
   "permissions": [
     "activeTab",
@@ -9,52 +9,11 @@
     "scripting"
   ],
   "host_permissions": [
-    "https://miruro.tv/*",
-    "https://*.miruro.tv/*",
-    "https://miruro.to/*",
-    "https://*.miruro.to/*",
-    "https://miruro.cx/*",
-    "https://*.miruro.cx/*",
-    "https://animepahe.ru/*",
-    "https://*.animepahe.ru/*",
-    "https://animepahe.si/*",
-    "https://*.animepahe.si/*",
-    "https://animepahe.org/*",
-    "https://*.animepahe.org/*",
-    "https://animepahe.com/*",
-    "https://*.animepahe.com/*",
-    "https://animepahe.pw/*",
-    "https://*.animepahe.pw/*",
-    "https://kwik.si/*",
-    "https://*.kwik.si/*",
-    "https://kwik.cx/*",
-    "https://*.kwik.cx/*",
-    "http://localhost:3000/*"
+    "<all_urls>"
   ],
   "content_scripts": [
     {
-      "matches": [
-        "https://miruro.tv/*",
-        "https://*.miruro.tv/*",
-        "https://miruro.to/*",
-        "https://*.miruro.to/*",
-        "https://miruro.cx/*",
-        "https://*.miruro.cx/*",
-        "https://animepahe.ru/*",
-        "https://*.animepahe.ru/*",
-        "https://animepahe.si/*",
-        "https://*.animepahe.si/*",
-        "https://animepahe.org/*",
-        "https://*.animepahe.org/*",
-        "https://animepahe.com/*",
-        "https://*.animepahe.com/*",
-        "https://animepahe.pw/*",
-        "https://*.animepahe.pw/*",
-        "https://kwik.si/*",
-        "https://*.kwik.si/*",
-        "https://kwik.cx/*",
-        "https://*.kwik.cx/*"
-      ],
+      "matches": ["<all_urls>"],
       "js": ["content.js"],
       "run_at": "document_idle",
       "all_frames": true
