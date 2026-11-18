@@ -9,16 +9,24 @@ Show what anime you're watching in real-time on Discord with native **Watching**
 - **KotoPlay** (`kotoplay.to`)
 - **Miruro** (`miruro.cx`, `miruro.to`, `miruro.tv`)
 - **Gotaku** (`gotaku.to`)
-- **AnimePahe** (`animepahe.pw` and mirrors)
+- **AnimePahe** (`animepahe.pw` and mirrors — *availability depends on mirror/Cloudflare access*)
+
+---
+
+## 📸 Preview
+
+| Browser Extension | Discord Activity |
+| :---: | :---: |
+| ![Extension Popup](screenshots/popup.png) | ![Discord Activity](screenshots/discord_card.png) |
 
 ---
 
 ## ✨ Features
 
 - **👀 Native Watching Status & Live Progress Bar**: Displays `Watching Anime` with Discord's native live progress bar while playing, a custom watch-session counter (`⏱ 14m`) in the status line, and a persistent session timer when paused.
-- **💡 Dynamic Toolbar Icon**: Extension icon glows bright when connected to Discord, shifts to amber when waiting for Discord, and dims when the desktop app is offline—no click needed.
+- **💡 Dynamic Toolbar Icon**: Extension icon glows bright when connected to Discord, shifts to amber when waiting for Discord, and dims when the desktop app is offline—updated in real time over SSE (`/events`), no click needed.
 - **🪟 Frosted Glass Extension UI**: Neutral translucent popup that samples a subtle accent tint from the anime you're watching, with toggles for:
-  - **Privacy Mode**: Hides anime title, episode, cover art, and progress.
+  - **Privacy Mode**: Hides anime title, episode, cover art, and progress on Discord.
   - **Show Episode Number**, **Show Playback Progress**, and **Show Streaming Site**.
 - **🖼️ AniList Cover Art + Caching**: Uses site artwork when available or fetches covers from AniList GraphQL with local caching.
 - **⚡ Lightweight & Resilient**: Only injects into supported anime tabs (including cross-origin player iframes), persists state across MV3 service worker sleeps, and runs Discord RPC on a dedicated thread with a 3s reconnect heartbeat.

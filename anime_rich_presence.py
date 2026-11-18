@@ -15,7 +15,7 @@ import re
 import threading
 import time
 from datetime import datetime
-from flask import Flask, request, jsonify
+from flask import Flask, Response, request, jsonify
 from flask_cors import CORS
 from pypresence import Presence
 from pypresence.types import ActivityType, StatusDisplayType
@@ -93,6 +93,8 @@ class EnhancedAnimeRichPresence:
         self._waiting_logged = False
         self._stop_event = threading.Event()
         self._state_lock = threading.Lock()
+        self._sse_lock = threading.Lock()
+        self._sse_clients = set()
         self.rpc_queue = queue.Queue()
 
         self.current_activity = None
@@ -124,19 +126,68 @@ class EnhancedAnimeRichPresence:
         self.rpc_thread = threading.Thread(target=self._rpc_worker, name="DiscordRPCWorker", daemon=True)
         self.rpc_thread.start()
 
+    def _get_status_payload(self):
+        with self._state_lock:
+            return {
+                'connected': True,
+                'discord': self.is_connected,
+                'activity': self.current_activity is not None,
+                'current_activity': self.current_activity,
+                'timestamp': datetime.now().isoformat()
+            }
+
+    def _broadcast_status(self):
+        payload = json.dumps(self._get_status_payload())
+        with self._sse_lock:
+            clients = list(self._sse_clients)
+        for q in clients:
+            try:
+                if q.full():
+                    try:
+                        q.get_nowait()
+                    except queue.Empty:
+                        pass
+                q.put_nowait(payload)
+            except Exception:
+                pass
+
     def setup_routes(self):
         """Setup Flask API routes."""
 
         @self.flask_app.route('/status', methods=['GET'])
         def get_status():
-            with self._state_lock:
-                return jsonify({
-                    'connected': True,
-                    'discord': self.is_connected,
-                    'activity': self.current_activity is not None,
-                    'current_activity': self.current_activity,
-                    'timestamp': datetime.now().isoformat()
-                })
+            return jsonify(self._get_status_payload())
+
+        @self.flask_app.route('/events', methods=['GET'])
+        def stream_events():
+            client_queue = queue.Queue(maxsize=16)
+            with self._sse_lock:
+                self._sse_clients.add(client_queue)
+
+            def event_stream():
+                try:
+                    yield f"data: {json.dumps(self._get_status_payload())}\n\n"
+                    while not self._stop_event.is_set():
+                        try:
+                            msg = client_queue.get(timeout=15.0)
+                            if msg is None:
+                                break
+                            yield f"data: {msg}\n\n"
+                        except queue.Empty:
+                            yield ": keepalive\n\n"
+                finally:
+                    with self._sse_lock:
+                        self._sse_clients.discard(client_queue)
+
+            return Response(
+                event_stream(),
+                mimetype='text/event-stream',
+                headers={
+                    'Cache-Control': 'no-cache',
+                    'Connection': 'keep-alive',
+                    'X-Accel-Buffering': 'no',
+                }
+            )
 
         @self.flask_app.route('/update', methods=['POST'])
         def update_activity():
@@ -273,6 +324,7 @@ class EnhancedAnimeRichPresence:
                 self.is_connected = True
             self._waiting_logged = False
             logger.info("✅ Connected to Discord!")
+            self._broadcast_status()
 
             # Restore pending anime if user already has a watch page open
             with self._state_lock:
@@ -308,6 +360,7 @@ class EnhancedAnimeRichPresence:
                 self.is_connected = False
             self._waiting_logged = True
             self._close_rpc_socket()
+            self._broadcast_status()
             return False
 
     def _rpc_worker(self):
@@ -506,6 +559,7 @@ class EnhancedAnimeRichPresence:
 
             if self.verbose or state_changed:
                 logger.info(f"📺 Updated Discord activity: {title} - {playing_status}")
+            self._broadcast_status()
 
         except Exception as e:
             logger.warning(f"🔌 Discord update failed ({e}). Reconnecting...")
@@ -513,6 +567,7 @@ class EnhancedAnimeRichPresence:
                 self.is_connected = False
             self._waiting_logged = True
             self._close_rpc_socket()
+            self._broadcast_status()
 
     def _send_discord_clear(self):
         with self._state_lock:
@@ -524,12 +579,14 @@ class EnhancedAnimeRichPresence:
         try:
             self.rpc.clear()
             logger.info("🧹 Cleared Discord activity")
+            self._broadcast_status()
         except Exception as e:
             logger.warning(f"🔌 Discord clear failed ({e}). Marking disconnected...")
             with self._state_lock:
                 self.is_connected = False
             self._waiting_logged = True
             self._close_rpc_socket()
+            self._broadcast_status()
 
     def format_session_duration(self, seconds):
         if not seconds or seconds < 60:
@@ -583,7 +640,8 @@ class EnhancedAnimeRichPresence:
                 host=self.host,
                 port=self.port,
                 debug=False,
-                use_reloader=False
+                use_reloader=False,
+                threaded=True
             )
         except KeyboardInterrupt:
             logger.info("\n🛑 Shutting down...")
@@ -591,6 +649,12 @@ class EnhancedAnimeRichPresence:
 
     def cleanup(self):
         self._stop_event.set()
+        with self._sse_lock:
+            for q in self._sse_clients:
+                try:
+                    q.put_nowait(None)
+                except Exception:
+                    pass
         self.rpc_queue.put(('shutdown', None))
         if self.rpc_thread.is_alive():
             self.rpc_thread.join(timeout=2.0)

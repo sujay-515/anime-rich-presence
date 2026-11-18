@@ -18,6 +18,9 @@ class BackgroundService {
         this.memoryState = { tabStates: {}, currentActivity: null, lastServerOk: false, lastDiscordOk: false };
         this.lastIconKey = null;
         this.stateQueue = Promise.resolve();
+        this.sseActive = false;
+        this.sseRetryMs = 2000;
+        this.sseRetryTimer = null;
         this.init();
     }
 
@@ -111,8 +114,9 @@ class BackgroundService {
             });
         }
 
-        // Update toolbar icon state immediately on service worker wake
+        // Update toolbar icon state & open live SSE stream on service worker wake
         this.enqueue(() => this.getStatus(true));
+        this.ensureEventStream();
 
         chrome.runtime.onInstalled.addListener(async () => {
             console.log('Extension loaded/updated. Injecting into open anime tabs...');
@@ -423,22 +427,70 @@ class BackgroundService {
 
     async checkAndResyncIfNeeded() {
         await this.getStatus(true);
+        this.ensureEventStream();
     }
 
-    async getStatus(resyncOnReconnect = false) {
-        const store = await this.loadState();
-        let connected = false;
-        let discord = false;
+    ensureEventStream() {
+        if (this.sseActive) return;
+        if (this.sseRetryTimer) {
+            clearTimeout(this.sseRetryTimer);
+            this.sseRetryTimer = null;
+        }
+        this.connectEventStream();
+    }
+
+    async connectEventStream() {
+        if (this.sseActive) return;
+        this.sseActive = true;
 
         try {
-            const res = await fetch(`${this.serverUrl}/status`);
-            if (res.ok) {
-                const data = await res.json();
-                connected = Boolean(data.connected);
-                discord = Boolean(data.discord);
+            const res = await fetch(`${this.serverUrl}/events`, {
+                headers: { 'Accept': 'text/event-stream' }
+            });
+            if (!res.ok || !res.body) {
+                throw new Error(`HTTP ${res.status}`);
             }
-        } catch (err) {}
 
+            this.sseRetryMs = 2000;
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+
+                let sepIdx;
+                while ((sepIdx = buffer.indexOf('\n\n')) !== -1) {
+                    const rawEvent = buffer.slice(0, sepIdx);
+                    buffer = buffer.slice(sepIdx + 2);
+                    for (const line of rawEvent.split('\n')) {
+                        if (line.startsWith('data:')) {
+                            try {
+                                const payload = JSON.parse(line.slice(5).trim());
+                                await this.enqueue(() => this.applyServerStatus(
+                                    Boolean(payload.connected),
+                                    Boolean(payload.discord),
+                                    true
+                                ));
+                            } catch (e) {}
+                        }
+                    }
+                }
+            }
+        } catch (err) {
+            // Stream closed or backend offline -> immediately dim toolbar icon
+        } finally {
+            this.sseActive = false;
+            await this.enqueue(() => this.applyServerStatus(false, false, false));
+            this.sseRetryTimer = setTimeout(() => this.ensureEventStream(), this.sseRetryMs);
+            this.sseRetryMs = Math.min(15000, this.sseRetryMs * 2);
+        }
+    }
+
+    async applyServerStatus(connected, discord, resyncOnReconnect = false) {
+        const store = await this.loadState();
         const reconnected = (!store.lastServerOk && connected) || (!store.lastDiscordOk && discord);
         store.lastServerOk = connected;
         store.lastDiscordOk = discord;
@@ -455,6 +507,22 @@ class BackgroundService {
             discord,
             currentAnime: store.currentActivity
         };
+    }
+
+    async getStatus(resyncOnReconnect = false) {
+        let connected = false;
+        let discord = false;
+
+        try {
+            const res = await fetch(`${this.serverUrl}/status`);
+            if (res.ok) {
+                const data = await res.json();
+                connected = Boolean(data.connected);
+                discord = Boolean(data.discord);
+            }
+        } catch (err) {}
+
+        return this.applyServerStatus(connected, discord, resyncOnReconnect);
     }
 }
 
