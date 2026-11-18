@@ -82,8 +82,10 @@ class EnhancedAnimeRichPresence:
             StatusDisplayType.DETAILS,
         )
         self.activity_name = os.environ.get("DISCORD_ACTIVITY_NAME", "Anime").strip() or None
-        self.use_progress_bar = os.environ.get("DISCORD_PROGRESS_BAR", "false").strip().lower() in ("1", "true", "yes")
+        self.use_progress_bar = os.environ.get("DISCORD_PROGRESS_BAR", "true").strip().lower() in ("1", "true", "yes")
+        self.use_session_timer = os.environ.get("DISCORD_SESSION_TIMER", "true").strip().lower() in ("1", "true", "yes")
         self.session_start_time = None
+        self.last_session_label = None
 
         self.rpc = None
         self.rpc_loop = None
@@ -176,6 +178,7 @@ class EnhancedAnimeRichPresence:
                     self.last_discord_raw = None
                     self.current_start_time = None
                     self.session_start_time = None
+                    self.last_session_label = None
                     self.last_logged_state = None
 
                 self.rpc_queue.put(('clear', None))
@@ -221,6 +224,13 @@ class EnhancedAnimeRichPresence:
         else:
             if abs(curr_progress - prev_progress) > 2.0:
                 return True
+
+        # Push when custom session timer minute label rolls over (when using native bar)
+        if self.use_progress_bar and self.use_session_timer and self.session_start_time is not None:
+            curr_label = self.format_session_duration(int(now) - self.session_start_time)
+            if curr_label != self.last_session_label:
+                return True
+            return False
 
         return elapsed >= self.DISCORD_UPDATE_MIN_INTERVAL
 
@@ -491,6 +501,8 @@ class EnhancedAnimeRichPresence:
                 self.current_activity = discord_activity
                 self.last_discord_raw = activity_data
                 self.last_discord_push_time = time.time()
+                if self.session_start_time is not None:
+                    self.last_session_label = self.format_session_duration(int(time.time()) - self.session_start_time)
 
             if self.verbose or state_changed:
                 logger.info(f"📺 Updated Discord activity: {title} - {playing_status}")
@@ -519,6 +531,15 @@ class EnhancedAnimeRichPresence:
             self._waiting_logged = True
             self._close_rpc_socket()
 
+    def format_session_duration(self, seconds):
+        if not seconds or seconds < 60:
+            return "<1m"
+        total_mins = int(seconds // 60)
+        hours, mins = divmod(total_mins, 60)
+        if hours > 0:
+            return f"{hours}h {mins}m"
+        return f"{mins}m"
+
     def format_episode_state(self, activity_data, is_paused_state, show_episode=True, show_progress=True, show_site_badge=True, privacy_mode=False):
         parts = []
         if is_paused_state:
@@ -528,7 +549,7 @@ class EnhancedAnimeRichPresence:
             parts.append(f"Episode {activity_data['episode']}")
 
         # Show text progress fallback when paused, using persistent timer, or when duration isn't available yet
-        has_native_bar = self.use_progress_bar and (not is_paused_state) and bool(activity_data.get('duration'))
+        has_native_bar = self.use_progress_bar and show_progress and (not is_paused_state) and bool(activity_data.get('duration'))
         if show_progress and not has_native_bar and activity_data.get('progress') is not None and activity_data.get('duration') and not privacy_mode:
             progress_time = self.format_time(activity_data['progress'])
             duration_time = self.format_time(activity_data['duration'])
@@ -538,6 +559,11 @@ class EnhancedAnimeRichPresence:
         if show_site_badge:
             site = activity_data.get('site', 'Miruro') if not privacy_mode else 'Anime'
             parts.append(site)
+
+        # Show custom watch-session timer in state while native progress bar occupies timestamps
+        if self.use_session_timer and has_native_bar and not privacy_mode and self.session_start_time is not None:
+            session_label = self.format_session_duration(int(time.time()) - self.session_start_time)
+            parts.append(f"⏱ {session_label}")
 
         return " • ".join(parts) if parts else "Watching"
 
