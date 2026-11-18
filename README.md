@@ -1,64 +1,103 @@
-# Discord Anime Rich Presence
+# 🎌 Anime Rich Presence for Discord
 
-Show what anime you're watching on Discord with Rich Presence for Miruro.
+Show what anime you're watching in real-time on Discord with rich embeds, dynamic thumbnails, episode info, and interactive playback timers.
 
-## Features
+Supported sites:
+- **Miruro** (`miruro.cx`, `miruro.to`, `miruro.tv`)
+- **AnimePahe** (`animepahe.ru`, `animepahe.si`, `animepahe.org`, `animepahe.com`, `animepahe.pw`) via Kwik Player
 
-- Real-time anime detection on Miruro
-- Dynamic thumbnails from AniList API
-- Episode and progress tracking
-- Cross-platform (macOS and Windows)
+---
 
-## Setup
+## ✨ Features
 
-### 1. Download This Project
+- **📺 Real-time Detection**: Automatically detects anime title, episode number, playback progress, and pause/play state.
+- **🖼️ AniList Dynamic Cover Art**: Automatically fetches high-resolution anime thumbnails from the AniList GraphQL API with local caching.
+- **⏱️ Live Elapsed Timestamps**: Discord displays an accurate green playback timer synchronized with your video.
+- **🎨 Modern Extension UI**: Sleek dark popup with live connection status and customizable display toggles:
+  - **Privacy Mode**: Hides specific anime titles and episode numbers (shows "Watching Anime").
+  - **Show Episode**: Toggle episode numbers on/off.
+  - **Show Progress**: Toggle time progress display (`02:30 / 24:00`).
+  - **Show Site Badge**: Toggle Miruro / AnimePahe badge.
+- **🔄 Auto Reconnection**: Recovers smoothly when Discord opens, closes, or restarts.
 
-Click the green Code button, select Download ZIP, and extract it.
+---
 
-### 2. Discord Application Setup
+## 🚀 Quick Setup
 
-1. Go to discord.com/developers/applications
-2. Create new application and copy the Application ID
-3. Edit anime_rich_presence.py line 27 with your ID
+### 1. Discord Application Setup
 
-### 3. Install Dependencies
+1. Go to the [Discord Developer Portal](https://discord.com/developers/applications).
+2. Click **New Application**.
+3. Name it what you want Discord to display as your activity (for example, naming it **"Watching"** will make your Discord status display as **"Playing Watching"** or **"Watching <Anime Name>"**).
+4. *(Optional)* Copy your **Application ID** and paste it into `self.client_id` in `anime_rich_presence.py` if you prefer your own custom client.
 
-macOS: Open Terminal and run these commands one by one:
-cd path/to/extracted/folder
+![Discord Status Example](screenshots/app_name.png)
+
+---
+
+### 2. Run the Desktop Backend
+
+Make sure you have Python 3.8+ installed:
+
+```bash
+# 1. Clone repository
+git clone https://github.com/<your-username>/anime-rich-presence.git
+cd anime-rich-presence
+
+# 2. Create virtual environment & install dependencies
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 
-Windows: Open Command Prompt and run these commands one by one:
-cd path\to\extracted\folder
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
+# 3. Start the application
+./run.sh
+```
 
-### 4. Install Browser Extension
+*(You can also run `./start_with_retry.sh` if you want a background restart daemon).*
 
-1. Open chrome://extensions/
-2. Enable Developer mode
-3. Click Load unpacked
-4. Select browser-extension folder
+---
 
-### 5. Run
+### 3. Install the Browser Extension
 
-macOS: source venv/bin/activate then python anime_rich_presence.py
-Windows: venv\Scripts\activate then python anime_rich_presence.py
+1. Open your Chromium browser (Chrome, Brave, Edge, Opera).
+2. Navigate to `chrome://extensions/`.
+3. Enable **Developer mode** (top right toggle).
+4. Click **Load unpacked** and select the [`browser-extension`](./browser-extension) folder from this repository.
+5. Pin the extension to your toolbar.
 
-Open Discord desktop app and play anime on Miruro.
+---
 
-## Troubleshooting
+### 4. Start Watching!
 
-- Use Discord desktop app not web
-- Restart Discord then server if connection fails
-- Reload extension if not detecting
+1. Make sure Discord desktop app is running.
+2. Open any anime on [Miruro](https://miruro.cx) or [AnimePahe](https://animepahe.ru).
+3. Play any episode. The extension will automatically sync your playback status to Discord!
 
-## Credits
+---
 
-Created by Sujay
+## 🛠️ Architecture
 
-## License
+```
+┌────────────────────────────────┐
+│      Browser Extension         │
+│  (Miruro / AnimePahe Detector) │
+└───────────────┬────────────────┘
+                │ POST /update (JSON)
+                ▼
+┌────────────────────────────────┐
+│      Python Backend App        │
+│    (Flask API on Port 3000)    │
+└───────────────┬────────────────┘
+                │ Discord IPC Socket (pypresence)
+                ▼
+┌────────────────────────────────┐
+│      Discord Desktop App       │
+│    (Custom Rich Presence)      │
+└────────────────────────────────┘
+```
 
-MIT License
+---
+
+## 📄 License
+
+MIT License. Feel free to use, modify, and distribute.
