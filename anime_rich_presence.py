@@ -18,6 +18,7 @@ from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from pypresence import Presence
+from pypresence.types import ActivityType, StatusDisplayType
 import requests
 
 logging.basicConfig(
@@ -60,6 +61,26 @@ class EnhancedAnimeRichPresence:
         self.host = os.environ.get("HOST", "localhost")
         self.port = int(os.environ.get("PORT", "3000"))
         self.verbose = verbose
+
+        activity_map = {
+            "playing": ActivityType.PLAYING,
+            "listening": ActivityType.LISTENING,
+            "watching": ActivityType.WATCHING,
+            "competing": ActivityType.COMPETING,
+        }
+        status_display_map = {
+            "name": StatusDisplayType.NAME,
+            "state": StatusDisplayType.STATE,
+            "details": StatusDisplayType.DETAILS,
+        }
+        self.activity_type = activity_map.get(
+            os.environ.get("DISCORD_ACTIVITY_TYPE", "watching").strip().lower(),
+            ActivityType.WATCHING,
+        )
+        self.status_display_type = status_display_map.get(
+            os.environ.get("DISCORD_STATUS_DISPLAY", "details").strip().lower(),
+            StatusDisplayType.DETAILS,
+        )
 
         self.rpc = None
         self.rpc_loop = None
@@ -173,6 +194,8 @@ class EnhancedAnimeRichPresence:
         if self.last_discord_raw is None:
             return True
         if self.is_state_different(data, self.last_discord_raw):
+            return True
+        if (data.get('duration') or 0) != (self.last_discord_raw.get('duration') or 0):
             return True
 
         # Detect user seek by comparing progress delta vs elapsed wall time
@@ -380,6 +403,7 @@ class EnhancedAnimeRichPresence:
             is_playing = activity_data.get('isPlaying', True)
             is_paused = activity_data.get('isPaused', False)
             progress = activity_data.get('progress', 0)
+            duration = activity_data.get('duration', 0) or 0
             episode = activity_data.get('episode')
 
             privacy_mode = activity_data.get('privacyMode', False)
@@ -393,16 +417,18 @@ class EnhancedAnimeRichPresence:
             if is_paused or not is_playing:
                 small_image = "pause_small"
                 small_text = "Paused"
-                status_emoji = "⏸️"
                 playing_status = "⏸️ Paused"
             else:
                 small_image = "play_small"
                 small_text = "Playing"
-                status_emoji = "▶️"
                 playing_status = "▶️ Playing"
 
+            details_text = display_title if self.activity_type == ActivityType.WATCHING else f"{'⏸️' if (is_paused or not is_playing) else '▶️'} {display_title}"
+
             discord_activity = {
-                'details': f"{status_emoji} {display_title}",
+                'activity_type': self.activity_type,
+                'status_display_type': StatusDisplayType.NAME if privacy_mode else self.status_display_type,
+                'details': details_text,
                 'state': self.format_episode_state(
                     activity_data,
                     is_paused or not is_playing,
@@ -417,7 +443,7 @@ class EnhancedAnimeRichPresence:
                 'small_text': small_text,
             }
 
-            if show_progress and is_playing and not is_paused and progress is not None:
+            if not privacy_mode and show_progress and is_playing and not is_paused and progress is not None:
                 calculated_start = int(time.time() - progress)
                 if (self.current_start_time is None or
                     abs(self.current_start_time - calculated_start) > 3 or
@@ -426,6 +452,8 @@ class EnhancedAnimeRichPresence:
                     self.last_discord_raw.get('episode') != episode):
                     self.current_start_time = calculated_start
                 discord_activity['start'] = self.current_start_time
+                if duration > 0:
+                    discord_activity['end'] = self.current_start_time + int(duration)
             else:
                 self.current_start_time = None
 
@@ -485,7 +513,9 @@ class EnhancedAnimeRichPresence:
         if show_episode and activity_data.get('episode') is not None and not privacy_mode:
             parts.append(f"Episode {activity_data['episode']}")
 
-        if show_progress and activity_data.get('progress') is not None and activity_data.get('duration') and not privacy_mode:
+        # Show text progress fallback when paused (no live bar) or when duration isn't available yet
+        has_native_bar = (not is_paused_state) and bool(activity_data.get('duration'))
+        if show_progress and not has_native_bar and activity_data.get('progress') is not None and activity_data.get('duration') and not privacy_mode:
             progress_time = self.format_time(activity_data['progress'])
             duration_time = self.format_time(activity_data['duration'])
             progress_percent = min(100, max(0, int((activity_data['progress'] / activity_data['duration']) * 100)))
