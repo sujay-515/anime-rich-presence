@@ -1,6 +1,9 @@
 // content.js - SPA-safe anime metadata & video playback detector
 
 (() => {
+    if (window.__ARP_LOADED__) return;
+    window.__ARP_LOADED__ = true;
+
     const isTopFrame = (window.self === window.top);
 
     function cleanAnimeTitle(title) {

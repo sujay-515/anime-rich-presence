@@ -1,5 +1,11 @@
 // background.js - MV3-safe state manager & Discord bridge
 
+const SUPPORTED_SITE_REGEX = /miruro|animepahe/i;
+
+function isSupportedAnimeUrl(url) {
+    return Boolean(url && /^https?:\/\//i.test(url) && SUPPORTED_SITE_REGEX.test(url));
+}
+
 class BackgroundService {
     constructor() {
         this.serverUrl = 'http://localhost:3000';
@@ -30,10 +36,9 @@ class BackgroundService {
             });
         });
 
-        chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+        chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
             if (changeInfo.url) {
-                const isSupported = /miruro|animepahe/i.test(changeInfo.url);
-                if (!isSupported) {
+                if (!isSupportedAnimeUrl(changeInfo.url)) {
                     this.enqueue(async () => {
                         const store = await this.loadState();
                         if (store.tabStates[tabId]) {
@@ -44,7 +49,19 @@ class BackgroundService {
                     });
                 }
             }
+            if (changeInfo.status === 'complete' && tab && isSupportedAnimeUrl(tab.url)) {
+                this.injectIfSupported(tabId);
+            }
         });
+
+        // Inject into main frame and dynamically spawned player iframes ONLY on supported anime tabs
+        if (chrome.webNavigation) {
+            chrome.webNavigation.onCompleted.addListener((details) => {
+                if (!details || details.tabId < 0) return;
+                if (details.url && (details.url === 'about:blank' || details.url.startsWith('chrome'))) return;
+                this.injectIfSupported(details.tabId, details.frameId);
+            });
+        }
 
         chrome.tabs.onActivated.addListener(() => {
             this.enqueue(async () => {
@@ -92,17 +109,28 @@ class BackgroundService {
             try {
                 const tabs = await chrome.tabs.query({});
                 for (const tab of tabs) {
-                    if (tab.url && (tab.url.includes('miruro') || tab.url.includes('animepahe'))) {
-                        try {
-                            await chrome.scripting.executeScript({
-                                target: { tabId: tab.id, allFrames: true },
-                                files: ['content.js']
-                            });
-                        } catch (e) {}
+                    if (isSupportedAnimeUrl(tab.url)) {
+                        await this.injectIfSupported(tab.id);
                     }
                 }
             } catch (e) {}
         });
+    }
+
+    async injectIfSupported(tabId, frameId = null) {
+        try {
+            const tab = await chrome.tabs.get(tabId);
+            if (!tab || !isSupportedAnimeUrl(tab.url)) return;
+            const target = (typeof frameId === 'number' && frameId >= 0)
+                ? { tabId, frameIds: [frameId] }
+                : { tabId, allFrames: true };
+            await chrome.scripting.executeScript({
+                target,
+                files: ['content.js']
+            });
+        } catch (e) {
+            // Ignore closed tabs or transient restricted frames
+        }
     }
 
     // Serialize state read-modify-write operations to prevent MV3 race conditions

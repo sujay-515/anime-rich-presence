@@ -7,18 +7,11 @@
     "activeTab",
     "storage",
     "scripting",
-    "alarms"
+    "alarms",
+    "webNavigation"
   ],
   "host_permissions": [
     "<all_urls>"
-  ],
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"],
-      "run_at": "document_idle",
-      "all_frames": true
-    }
   ],
   "icons": {
     "16": "icons/icon-dim-16.png",
