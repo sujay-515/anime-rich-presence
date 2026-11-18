@@ -15,9 +15,9 @@ Show what anime you're watching in real-time on Discord with native **Watching**
 
 ## 📸 Preview
 
-| Browser Extension | Discord Activity |
+| Browser Extension | Discord Activity *(Playing & Paused)* |
 | :---: | :---: |
-| ![Extension Popup](screenshots/popup.png) | ![Discord Activity](screenshots/discord_card.png) |
+| <img src="screenshots/popup.png" width="260" alt="Extension Popup" /> | <img src="screenshots/discord_playing.png" width="440" alt="Discord Playing Activity" /><br><br><img src="screenshots/discord_paused.png" width="440" alt="Discord Paused Activity" /> |
 
 ---
 
