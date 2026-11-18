@@ -90,23 +90,28 @@ class MiruroDetector {
                 // Clean up title
                 title = title.replace(/^Watch\s+/i, '');
                 title = title.replace(/\s+Episode\s+\d+.*$/i, '');
-                title = title.replace(/\s+-\s+(Miruro|Episode).*$/i, '');
-                return title;
+                title = title.replace(/\s*[-|]\s*(Miruro|Episode).*$/i, '');
+                if (title && title.toLowerCase() !== 'miruro') {
+                    return title.trim();
+                }
             }
         }
 
         // Extract from page title
         const pageTitle = document.title;
-        if (pageTitle && pageTitle !== 'Miruro') {
-            return pageTitle.replace(/\s+-\s+Miruro.*$/i, '').trim();
+        if (pageTitle && pageTitle.toLowerCase() !== 'miruro') {
+            const cleaned = pageTitle.replace(/^Watch\s+/i, '').replace(/\s*[-|]\s*Miruro.*$/i, '').trim();
+            if (cleaned && cleaned.toLowerCase() !== 'miruro') {
+                return cleaned;
+            }
         }
 
         return null;
     }
 
     getEpisodeNumber() {
-        // Look for episode number in URL first
-        const urlMatch = window.location.href.match(/episode[/-](\d+)/i);
+        // Look for episode number in URL first (?ep=1 or /episode/1 or /ep-1)
+        const urlMatch = window.location.href.match(/(?:episode[/-]|[?&]ep=|[/-]ep-)(\d+)/i);
         if (urlMatch) return parseInt(urlMatch[1]);
 
         // Look in page content

@@ -18,8 +18,14 @@ Click the green Code button, select Download ZIP, and extract it.
 ### 2. Discord Application Setup
 
 1. Go to discord.com/developers/applications
-2. Create new application and copy the Application ID
-3. Edit anime_rich_presence.py line 27 with your ID
+2. Click "New Application"
+3. Name it exactly what you want to appear in Discord (e.g., naming it "Watching" will show "Watching" in your status)
+4. Copy the Application ID
+5. Edit anime_rich_presence.py line 27 with your ID
+
+**Example:**
+
+![Discord Status Example](screenshots/app_name.png)
 
 ### 3. Install Dependencies
 

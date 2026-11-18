@@ -35,6 +35,7 @@ class EnhancedAnimeRichPresence:
             "https://miruro.tv",
             "https://miruro.to",
             "https://www.miruro.to",
+            "https://miruro.cx",
             "chrome-extension://*",
             "moz-extension://*"
         ])
@@ -49,7 +50,7 @@ class EnhancedAnimeRichPresence:
         def get_status():
             return jsonify({
                 'connected': self.is_connected,
-                'discord': self.rpc is not None,
+                'discord': self.is_connected and self.rpc is not None,
                 'activity': self.current_activity is not None,
                 'timestamp': datetime.now().isoformat()
             })
@@ -81,6 +82,16 @@ class EnhancedAnimeRichPresence:
     
     def connect_to_discord(self):
         """Connect to Discord RPC"""
+        if self.is_connected:
+            return
+            
+        if self.rpc:
+            try:
+                self.rpc.close()
+            except Exception:
+                pass
+            self.rpc = None
+
         try:
             logger.info("🔗 Connecting to Discord...")
             self.rpc = Presence(self.client_id)
@@ -90,6 +101,8 @@ class EnhancedAnimeRichPresence:
             
         except Exception as e:
             logger.error(f"❌ Failed to connect to Discord: {e}")
+            self.is_connected = False
+            self.rpc = None
             logger.info("🔄 Will retry in 10 seconds...")
             threading.Timer(10.0, self.connect_to_discord).start()
     
@@ -187,9 +200,15 @@ class EnhancedAnimeRichPresence:
             
         except Exception as e:
             logger.error(f"Failed to update Discord activity: {e}")
-            if "RPC connection not found" in str(e):
-                self.is_connected = False
-                self.connect_to_discord()
+            self.is_connected = False
+            if self.rpc:
+                try:
+                    self.rpc.close()
+                except Exception:
+                    pass
+                self.rpc = None
+            logger.info("🔄 Will attempt reconnect in 5 seconds...")
+            threading.Timer(5.0, self.connect_to_discord).start()
             raise
     
     def format_episode_state(self, activity_data, is_paused_state):
@@ -238,6 +257,14 @@ class EnhancedAnimeRichPresence:
             
         except Exception as e:
             logger.error(f"Failed to clear Discord activity: {e}")
+            self.is_connected = False
+            if self.rpc:
+                try:
+                    self.rpc.close()
+                except Exception:
+                    pass
+                self.rpc = None
+            threading.Timer(5.0, self.connect_to_discord).start()
     
     def run(self, host='localhost', port=3000):
         """Run the Flask server"""
