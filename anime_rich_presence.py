@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
 """
 Enhanced Anime Rich Presence - Python Desktop App
-Persistent timestamps, AniList cover caching, multi-site streaming support, and robust Discord RPC lifecycle.
+Single-thread Discord RPC worker, active socket heartbeat, AniList cover caching,
+smart rate-limiting, and seamless auto-reconnection.
 """
 
-import time
-import threading
-import json
-import requests
 import argparse
-import os
-import sys
+import asyncio
+import json
 import logging
+import os
+import queue
+import re
+import threading
+import time
 from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from pypresence import Presence
+import requests
 
 logging.basicConfig(
     level=logging.INFO,
@@ -49,17 +52,28 @@ load_env_file()
 
 
 class EnhancedAnimeRichPresence:
+    HEARTBEAT_INTERVAL = 3.0
+    DISCORD_UPDATE_MIN_INTERVAL = 15.0
+
     def __init__(self, verbose=False):
         self.client_id = os.environ.get("DISCORD_CLIENT_ID", "1421704557830078464")
-        self.rpc = None
-        self.is_connected = False
-        self.is_connecting = False
-        self.current_activity = None
-        self.session_start_time = int(time.time())
-        self.current_start_time = None
         self.host = os.environ.get("HOST", "localhost")
         self.port = int(os.environ.get("PORT", "3000"))
         self.verbose = verbose
+
+        self.rpc = None
+        self.rpc_loop = None
+        self.is_connected = False
+        self._waiting_logged = False
+        self._stop_event = threading.Event()
+        self._state_lock = threading.Lock()
+        self.rpc_queue = queue.Queue()
+
+        self.current_activity = None
+        self.pending_raw_data = None
+        self.last_discord_push_time = 0.0
+        self.last_discord_raw = None
+        self.current_start_time = None
 
         self.thumbnail_cache = {}
         self.last_logged_state = None
@@ -74,50 +88,70 @@ class EnhancedAnimeRichPresence:
         ])
 
         self.setup_routes()
-        self.connect_to_discord()
+
+        # Start dedicated single-thread Discord RPC worker
+        self.rpc_thread = threading.Thread(target=self._rpc_worker, name="DiscordRPCWorker", daemon=True)
+        self.rpc_thread.start()
 
     def setup_routes(self):
-        """Setup Flask API routes"""
+        """Setup Flask API routes."""
 
         @self.flask_app.route('/status', methods=['GET'])
         def get_status():
-            return jsonify({
-                'connected': True,
-                'discord': self.is_connected and self.rpc is not None,
-                'activity': self.current_activity is not None,
-                'current_activity': self.current_activity,
-                'timestamp': datetime.now().isoformat()
-            })
+            with self._state_lock:
+                return jsonify({
+                    'connected': True,
+                    'discord': self.is_connected,
+                    'activity': self.current_activity is not None,
+                    'current_activity': self.current_activity,
+                    'timestamp': datetime.now().isoformat()
+                })
 
         @self.flask_app.route('/update', methods=['POST'])
         def update_activity():
             try:
                 data = request.get_json()
-                if not data:
-                    return jsonify({'success': False, 'error': 'No data provided'}), 400
+                if not data or not data.get('title'):
+                    return jsonify({'success': False, 'error': 'No valid activity data provided'}), 400
 
                 is_diff = self.is_state_different(data, self.last_logged_state)
                 if self.verbose or is_diff:
                     logger.info(f"RECEIVED DATA: {json.dumps(data, indent=2)}")
 
-                self.update_discord_activity(data)
-
                 if is_diff:
                     self.last_logged_state = data
 
-                return jsonify({'success': True, 'message': 'Activity updated'})
+                with self._state_lock:
+                    self.pending_raw_data = data
+                    discord_ready = self.is_connected
+
+                if self._should_push_to_discord(data):
+                    self.rpc_queue.put(('update', data))
+
+                return jsonify({
+                    'success': True,
+                    'discord': discord_ready,
+                    'queued': not discord_ready
+                })
 
             except Exception as e:
-                logger.error(f"Failed to update activity: {e}")
+                logger.error(f"Failed to handle update request: {e}")
                 return jsonify({'success': False, 'error': str(e)}), 500
 
         @self.flask_app.route('/clear', methods=['POST'])
         def clear_activity():
             try:
-                self.clear_discord_activity()
+                with self._state_lock:
+                    self.pending_raw_data = None
+                    self.current_activity = None
+                    self.last_discord_raw = None
+                    self.current_start_time = None
+                    self.last_logged_state = None
+
+                self.rpc_queue.put(('clear', None))
                 return jsonify({'success': True, 'message': 'Activity cleared'})
             except Exception as e:
-                logger.error(f"Failed to clear activity: {e}")
+                logger.error(f"Failed to handle clear request: {e}")
                 return jsonify({'success': False, 'error': str(e)}), 500
 
     def is_state_different(self, current, last):
@@ -134,47 +168,156 @@ class EnhancedAnimeRichPresence:
             current.get('showSiteBadge') != last.get('showSiteBadge')
         )
 
-    def connect_to_discord(self):
-        """Connect to Discord RPC with safe socket recovery"""
-        if self.is_connected or self.is_connecting:
-            return
+    def _should_push_to_discord(self, data):
+        """Push immediately on state changes or seeks; throttle routine playback ticks."""
+        if self.last_discord_raw is None:
+            return True
+        if self.is_state_different(data, self.last_discord_raw):
+            return True
 
-        self.is_connecting = True
+        # Detect user seek by comparing progress delta vs elapsed wall time
+        now = time.time()
+        elapsed = now - self.last_discord_push_time
+        prev_progress = self.last_discord_raw.get('progress') or 0
+        curr_progress = data.get('progress') or 0
+        is_playing = data.get('isPlaying', True) and not data.get('isPaused', False)
 
+        if is_playing:
+            expected_progress = prev_progress + elapsed
+            if abs(curr_progress - expected_progress) > 4.0:
+                return True
+        else:
+            if abs(curr_progress - prev_progress) > 2.0:
+                return True
+
+        return elapsed >= self.DISCORD_UPDATE_MIN_INTERVAL
+
+    # ------------------------------------------------------------------
+    # Dedicated Single-Thread Discord RPC Worker
+    # ------------------------------------------------------------------
+    def _ensure_worker_loop(self):
+        if self.rpc_loop is None or self.rpc_loop.is_closed():
+            self.rpc_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.rpc_loop)
+
+    def _close_rpc_socket(self):
         if self.rpc:
             try:
                 self.rpc.close()
             except Exception:
                 pass
             self.rpc = None
+        if self.rpc_loop and not self.rpc_loop.is_closed():
+            try:
+                self.rpc_loop.close()
+            except Exception:
+                pass
+        self.rpc_loop = None
+
+    def _try_connect_discord(self):
+        if self.is_connected:
+            return True
+
+        self._close_rpc_socket()
+        self._ensure_worker_loop()
 
         try:
-            logger.info("🔗 Connecting to Discord...")
-            self.rpc = Presence(self.client_id)
-            self.rpc.connect()
-            self.is_connected = True
-            self.is_connecting = False
+            if not self._waiting_logged:
+                logger.info("🔗 Connecting to Discord...")
+            client = Presence(self.client_id)
+            client.connect()
+            self.rpc = client
+            with self._state_lock:
+                self.is_connected = True
+            self._waiting_logged = False
             logger.info("✅ Connected to Discord!")
 
-            if self.current_activity:
-                logger.info("🔄 Restoring previous activity...")
-                try:
-                    self.rpc.update(**self.current_activity)
-                except Exception:
-                    pass
-
+            # Restore pending anime if user already has a watch page open
+            with self._state_lock:
+                pending = self.pending_raw_data
+            if pending:
+                logger.info("🔄 Syncing active anime to Discord...")
+                self._send_discord_update(pending)
+            return True
         except Exception as e:
-            self.is_connected = False
-            self.is_connecting = False
-            self.rpc = None
-            logger.info(f"⏳ Discord not found ({e}). Retrying in 10 seconds...")
-            threading.Timer(10.0, self.connect_to_discord).start()
+            self._close_rpc_socket()
+            with self._state_lock:
+                self.is_connected = False
+            if not self._waiting_logged:
+                logger.info(f"⏳ Waiting for Discord ({e}). Checking every {int(self.HEARTBEAT_INTERVAL)}s...")
+                self._waiting_logged = True
+            return False
 
+    def _check_discord_alive(self):
+        """Check whether the underlying Discord IPC pipe is still open."""
+        if not self.is_connected or not self.rpc:
+            return False
+        try:
+            if self.rpc_loop and not self.rpc_loop.is_closed():
+                self.rpc_loop.run_until_complete(asyncio.sleep(0.01))
+            reader = getattr(self.rpc, 'sock_reader', None)
+            writer = getattr(self.rpc, 'sock_writer', None)
+            if reader is None or writer is None or reader.at_eof() or writer.is_closing():
+                raise ConnectionResetError("Discord IPC pipe closed")
+            return True
+        except Exception as e:
+            logger.info(f"🔌 Discord disconnected ({e}). Waiting for reconnect...")
+            with self._state_lock:
+                self.is_connected = False
+            self._waiting_logged = True
+            self._close_rpc_socket()
+            return False
+
+    def _rpc_worker(self):
+        """Single thread owning all pypresence calls and asyncio loop."""
+        self._ensure_worker_loop()
+        self._try_connect_discord()
+
+        while not self._stop_event.is_set():
+            try:
+                cmd, payload = self.rpc_queue.get(timeout=self.HEARTBEAT_INTERVAL)
+            except queue.Empty:
+                if self.is_connected:
+                    self._check_discord_alive()
+                else:
+                    self._try_connect_discord()
+                continue
+
+            if cmd == 'shutdown':
+                break
+
+            # Coalesce queued updates so bursts only send the freshest state
+            if cmd in ('update', 'clear'):
+                while True:
+                    try:
+                        next_cmd, next_payload = self.rpc_queue.get_nowait()
+                        if next_cmd == 'shutdown':
+                            cmd = 'shutdown'
+                            break
+                        cmd, payload = next_cmd, next_payload
+                    except queue.Empty:
+                        break
+                if cmd == 'shutdown':
+                    break
+
+            if not self.is_connected:
+                self._try_connect_discord()
+
+            if cmd == 'update' and self.is_connected:
+                self._send_discord_update(payload)
+            elif cmd == 'clear' and self.is_connected:
+                self._send_discord_clear()
+
+        self._send_discord_clear()
+        self._close_rpc_socket()
+
+    # ------------------------------------------------------------------
+    # Formatting & AniList Lookup
+    # ------------------------------------------------------------------
     def clean_title_for_search(self, title):
-        """Clean anime title to optimize AniList search query matching"""
+        """Clean anime title to optimize AniList search query matching."""
         if not title:
             return ""
-        import re
         cleaned = title
         if " - " in cleaned:
             parts = cleaned.split(" - ")
@@ -191,7 +334,7 @@ class EnhancedAnimeRichPresence:
         return cleaned.strip()
 
     def get_anime_thumbnail(self, anime_title):
-        """Fetch anime thumbnail from AniList API with caching"""
+        """Fetch anime thumbnail from AniList API with caching."""
         if anime_title in self.thumbnail_cache:
             return self.thumbnail_cache[anime_title]
 
@@ -209,41 +352,35 @@ class EnhancedAnimeRichPresence:
                 }
             }
             '''
-            variables = {'search': search_title}
             response = requests.post(
                 'https://graphql.anilist.co',
-                json={'query': query, 'variables': variables},
+                json={'query': query, 'variables': {'search': search_title}},
                 timeout=5
             )
             if response.status_code == 200:
-                data = response.json()
-                media = data.get('data', {}).get('Media')
+                media = response.json().get('data', {}).get('Media')
                 if media:
                     cover_url = media.get('coverImage', {}).get('large')
                     if cover_url:
                         logger.info(f"📸 Found thumbnail for: {anime_title}")
                         self.thumbnail_cache[anime_title] = cover_url
                         return cover_url
-
         except Exception as e:
             logger.warning(f"AniList lookup failed for {anime_title}: {e}")
 
         self.thumbnail_cache[anime_title] = None
         return None
 
-    def update_discord_activity(self, activity_data):
-        if not self.is_connected or not self.rpc:
-            self.connect_to_discord()
-            raise Exception("Discord is not connected")
+    def _send_discord_update(self, activity_data):
+        if not self.is_connected or not self.rpc or not activity_data:
+            return
 
         try:
             title = activity_data.get('title', 'Unknown Anime')
             is_playing = activity_data.get('isPlaying', True)
             is_paused = activity_data.get('isPaused', False)
             progress = activity_data.get('progress', 0)
-            duration = activity_data.get('duration', 0)
             episode = activity_data.get('episode')
-            site = activity_data.get('site', 'Miruro')
 
             privacy_mode = activity_data.get('privacyMode', False)
             show_episode = activity_data.get('showEpisode', True)
@@ -251,13 +388,7 @@ class EnhancedAnimeRichPresence:
             show_site_badge = activity_data.get('showSiteBadge', True)
 
             fallback_large_image = "https://i.imgur.com/Obm1W9B.png"
-
-            if privacy_mode:
-                display_title = "Watching Anime"
-                display_site = "Anime"
-            else:
-                display_title = title
-                display_site = site
+            display_title = "Watching Anime" if privacy_mode else title
 
             if is_paused or not is_playing:
                 small_image = "pause_small"
@@ -290,42 +421,61 @@ class EnhancedAnimeRichPresence:
                 calculated_start = int(time.time() - progress)
                 if (self.current_start_time is None or
                     abs(self.current_start_time - calculated_start) > 3 or
-                    self.last_logged_state is None or
-                    self.last_logged_state.get('title') != title or
-                    self.last_logged_state.get('episode') != episode):
+                    self.last_discord_raw is None or
+                    self.last_discord_raw.get('title') != title or
+                    self.last_discord_raw.get('episode') != episode):
                     self.current_start_time = calculated_start
-
                 discord_activity['start'] = self.current_start_time
             else:
                 self.current_start_time = None
 
             if not privacy_mode:
-                thumbnail_url = activity_data.get('coverArt')
-                if not thumbnail_url:
-                    thumbnail_url = self.get_anime_thumbnail(title)
+                thumbnail_url = activity_data.get('coverArt') or self.get_anime_thumbnail(title)
                 if thumbnail_url:
                     discord_activity['large_image'] = thumbnail_url
                     discord_activity['large_text'] = title
 
+            # Abort if /clear was called while waiting on AniList network lookup
+            with self._state_lock:
+                if self.pending_raw_data is None:
+                    return
+
             discord_activity = {k: v for k, v in discord_activity.items() if v is not None}
 
             self.rpc.update(**discord_activity)
-            self.current_activity = discord_activity
 
-            if self.verbose or self.is_state_different(activity_data, self.last_logged_state):
+            state_changed = self.is_state_different(activity_data, self.last_discord_raw)
+            with self._state_lock:
+                self.current_activity = discord_activity
+                self.last_discord_raw = activity_data
+                self.last_discord_push_time = time.time()
+
+            if self.verbose or state_changed:
                 logger.info(f"📺 Updated Discord activity: {title} - {playing_status}")
 
         except Exception as e:
-            logger.error(f"Failed to update Discord activity: {e}")
-            self.is_connected = False
-            if self.rpc:
-                try:
-                    self.rpc.close()
-                except Exception:
-                    pass
-                self.rpc = None
-            threading.Timer(5.0, self.connect_to_discord).start()
-            raise
+            logger.warning(f"🔌 Discord update failed ({e}). Reconnecting...")
+            with self._state_lock:
+                self.is_connected = False
+            self._waiting_logged = True
+            self._close_rpc_socket()
+
+    def _send_discord_clear(self):
+        with self._state_lock:
+            self.current_activity = None
+            self.last_discord_raw = None
+            self.current_start_time = None
+        if not self.is_connected or not self.rpc:
+            return
+        try:
+            self.rpc.clear()
+            logger.info("🧹 Cleared Discord activity")
+        except Exception as e:
+            logger.warning(f"🔌 Discord clear failed ({e}). Marking disconnected...")
+            with self._state_lock:
+                self.is_connected = False
+            self._waiting_logged = True
+            self._close_rpc_socket()
 
     def format_episode_state(self, activity_data, is_paused_state, show_episode=True, show_progress=True, show_site_badge=True, privacy_mode=False):
         parts = []
@@ -354,25 +504,6 @@ class EnhancedAnimeRichPresence:
         secs = int(seconds % 60)
         return f"{mins}:{secs:02d}"
 
-    def clear_discord_activity(self):
-        if not self.is_connected or not self.rpc:
-            return
-
-        try:
-            self.rpc.clear()
-            self.current_activity = None
-            logger.info("🧹 Cleared Discord activity")
-        except Exception as e:
-            logger.error(f"Failed to clear Discord activity: {e}")
-            self.is_connected = False
-            if self.rpc:
-                try:
-                    self.rpc.close()
-                except Exception:
-                    pass
-                self.rpc = None
-            threading.Timer(5.0, self.connect_to_discord).start()
-
     def run(self):
         logger.info(f"🚀 Starting Enhanced Anime Rich Presence server on http://{self.host}:{self.port}")
         logger.info(f"🔌 Caching: Enabled. Verbose logs: {'Enabled' if self.verbose else 'Disabled (State changes only)'}")
@@ -389,13 +520,12 @@ class EnhancedAnimeRichPresence:
             self.cleanup()
 
     def cleanup(self):
-        if self.rpc and self.is_connected:
-            try:
-                self.rpc.clear()
-                self.rpc.close()
-            except Exception:
-                pass
+        self._stop_event.set()
+        self.rpc_queue.put(('shutdown', None))
+        if self.rpc_thread.is_alive():
+            self.rpc_thread.join(timeout=2.0)
         logger.info("👋 Goodbye!")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Enhanced Anime Rich Presence")
@@ -409,6 +539,7 @@ def main():
     print("• Progress time display")
     print("• Dynamic anime thumbnails from AniList (cached)")
     print("• Multi-site support: Miruro & AnimePahe")
+    print("• Thread-safe Discord RPC worker with active heartbeat")
     print("=" * 50)
 
     app = EnhancedAnimeRichPresence(verbose=args.verbose)
@@ -418,6 +549,7 @@ def main():
         logger.error(f"Fatal server error: {e}")
         return 1
     return 0
+
 
 if __name__ == "__main__":
     exit(main())

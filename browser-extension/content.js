@@ -1,4 +1,4 @@
-// content.js - Universal anime & video playback detector
+// content.js - SPA-safe anime metadata & video playback detector
 
 (() => {
     const isTopFrame = (window.self === window.top);
@@ -24,8 +24,13 @@
 
     function findVideoElement(root = document) {
         try {
-            const video = root.querySelector('video');
-            if (video) return video;
+            const videos = root.querySelectorAll('video');
+            for (const video of videos) {
+                if (video.currentSrc || video.src || video.duration > 0 || video.readyState > 0) {
+                    return video;
+                }
+            }
+            if (videos.length > 0) return videos[0];
 
             // Search open Shadow DOM roots
             const all = root.querySelectorAll('*');
@@ -51,6 +56,17 @@
         return null;
     }
 
+    function safeSendMessage(payload) {
+        if (!chrome.runtime || !chrome.runtime.id) return;
+        try {
+            chrome.runtime.sendMessage(payload, () => {
+                if (chrome.runtime.lastError) {
+                    // Ignore transient wake-up errors
+                }
+            });
+        } catch (e) {}
+    }
+
     // ==========================================
     // TOP FRAME: Anime Metadata & Direct Player
     // ==========================================
@@ -60,45 +76,62 @@
         const isAnimePahe = host.includes('animepahe');
 
         if (!isMiruro && !isAnimePahe) {
-            // Not a supported anime site at the top level
             return;
         }
 
         console.log(`Anime Rich Presence: Monitoring anime page on ${host}`);
 
+        const initialPathname = window.location.pathname;
+        let initialJsonLdName = null;
+        let lastUrl = window.location.href;
         let lastMetadata = null;
         let lastPlayback = null;
         let attachedVideo = null;
 
+        function readJsonLd() {
+            const scripts = document.querySelectorAll('script[type="application/ld+json"]');
+            for (const script of scripts) {
+                try {
+                    const data = JSON.parse(script.textContent);
+                    if (data && data.name && typeof data.name === 'string') {
+                        const candidate = cleanAnimeTitle(data.name);
+                        if (candidate && candidate.toLowerCase() !== 'miruro') {
+                            return { name: candidate, image: data.image || null };
+                        }
+                    }
+                } catch (e) {}
+            }
+            return null;
+        }
+
+        // Record SSR initial JSON-LD so we can detect stale JSON-LD after SPA navigation
+        const initialLd = readJsonLd();
+        if (initialLd) {
+            initialJsonLdName = initialLd.name;
+        }
+
         function extractMiruroMetadata() {
-            // Only extract on watch pages
             if (!window.location.pathname.includes('/watch')) {
                 return null;
             }
 
             let title = null;
             let coverArt = null;
+            const navigatedInSpa = window.location.pathname !== initialPathname;
 
-            // 1. Check JSON-LD metadata schema (Miruro's primary structured data)
-            const jsonLdScripts = document.querySelectorAll('script[type="application/ld+json"]');
-            for (const script of jsonLdScripts) {
-                try {
-                    const data = JSON.parse(script.textContent);
-                    if (data && data.name && typeof data.name === 'string') {
-                        const candidate = cleanAnimeTitle(data.name);
-                        if (candidate && candidate.toLowerCase() !== 'miruro') {
-                            title = candidate;
-                            if (data.image) coverArt = data.image;
-                            break;
-                        }
-                    }
-                } catch (e) {}
+            // 1. JSON-LD metadata schema (skip if SPA navigated away and JSON-LD is still SSR initial value)
+            const ld = readJsonLd();
+            if (ld) {
+                const isStaleLd = navigatedInSpa && initialJsonLdName && ld.name === initialJsonLdName;
+                if (!isStaleLd) {
+                    title = ld.name;
+                    coverArt = ld.image;
+                }
             }
 
-            // 2. Extract from URL slug: /watch/<id>/<slug>
+            // 2. URL slug: /watch/<id>/<slug>
             if (!title) {
                 const pathParts = window.location.pathname.split('/').filter(Boolean);
-                // Expected format: ['watch', '<id>', '<slug>']
                 if (pathParts.length >= 3 && pathParts[0] === 'watch') {
                     const candidate = formatSlugTitle(pathParts[2]);
                     if (candidate && candidate.toLowerCase() !== 'miruro') {
@@ -107,11 +140,13 @@
                 }
             }
 
-            // 3. OpenGraph / Twitter meta tags
-            if (!title) {
+            // 3. OpenGraph / Twitter meta tags (only if not navigated away from initial SSR page)
+            if (!title && !navigatedInSpa) {
                 const meta = document.querySelector('meta[property="og:title"], meta[name="twitter:title"]');
                 if (meta && meta.content) {
-                    const candidate = cleanAnimeTitle(meta.content.replace(/^Watch\s+/i, '').replace(/\s*[-|]\s*Miruro.*$/i, ''));
+                    const candidate = cleanAnimeTitle(
+                        meta.content.replace(/^Watch\s+/i, '').replace(/\s*[-|]\s*Miruro.*$/i, '')
+                    );
                     if (candidate && candidate.toLowerCase() !== 'miruro') {
                         title = candidate;
                     }
@@ -139,7 +174,9 @@
             if (!title) {
                 const pageTitle = document.title;
                 if (pageTitle && pageTitle.toLowerCase() !== 'miruro') {
-                    const candidate = cleanAnimeTitle(pageTitle.replace(/^Watch\s+/i, '').replace(/\s*[-|]\s*Miruro.*$/i, ''));
+                    const candidate = cleanAnimeTitle(
+                        pageTitle.replace(/^Watch\s+/i, '').replace(/\s*[-|]\s*Miruro.*$/i, '')
+                    );
                     if (candidate && candidate.toLowerCase() !== 'miruro') {
                         title = candidate;
                     }
@@ -148,20 +185,19 @@
 
             if (!title) return null;
 
-            // Episode extraction
+            // Episode extraction: URL first, then active "Episode X" label (avoids sidebar "EP X" thumbnails)
             let episode = null;
             const epUrlMatch = window.location.href.match(/(?:[?&]ep=|[/-]ep-|\/episode\/)(\d+)/i);
             if (epUrlMatch) {
                 episode = parseInt(epUrlMatch[1], 10);
             } else {
                 const bodyText = document.body ? document.body.innerText : '';
-                const epMatch = bodyText.match(/\b(?:Episode|EP)\s*(\d+)\b/i);
+                const epMatch = bodyText.match(/\bEpisode\s+(\d+)\b/i);
                 if (epMatch) {
                     episode = parseInt(epMatch[1], 10);
                 }
             }
 
-            // Cover art fallback
             if (!coverArt) {
                 const img = document.querySelector('img[class*="cover"], img[class*="poster"], .poster img');
                 if (img && img.src && !img.src.includes('default') && !img.src.includes('icon')) {
@@ -169,12 +205,16 @@
                 }
             }
 
+            const themeMeta = document.querySelector('meta[name="theme-color"]');
+            const themeColor = themeMeta && themeMeta.content ? themeMeta.content.trim() : null;
+
             return {
                 title,
                 episode,
                 site: 'Miruro',
                 url: window.location.href,
-                coverArt
+                coverArt,
+                themeColor
             };
         }
 
@@ -218,40 +258,38 @@
             };
         }
 
-        function checkTopPage() {
+        function checkTopPage(forceSync = false) {
             if (!chrome.runtime || !chrome.runtime.id) return;
+
+            // Detect SPA URL navigation
+            if (window.location.href !== lastUrl) {
+                lastUrl = window.location.href;
+                lastPlayback = null;
+                forceSync = true;
+            }
 
             const metadata = isMiruro ? extractMiruroMetadata() : extractAnimePaheMetadata();
 
             if (!metadata) {
                 if (lastMetadata) {
-                    chrome.runtime.sendMessage({ type: 'ANIME_CLEAR' }, () => {});
+                    safeSendMessage({ type: 'ANIME_CLEAR' });
                     lastMetadata = null;
                     lastPlayback = null;
                 }
                 return;
             }
 
-            // Send metadata immediately if changed
-            const metadataChanged = !lastMetadata ||
+            const metadataChanged = forceSync ||
+                !lastMetadata ||
                 lastMetadata.title !== metadata.title ||
                 lastMetadata.episode !== metadata.episode;
 
-            if (metadataChanged) {
-                console.log('Top Frame: Detected anime metadata:', metadata.title, 'Ep:', metadata.episode);
-                chrome.runtime.sendMessage({
-                    type: 'ANIME_METADATA_UPDATE',
-                    data: metadata
-                }, () => {});
-                lastMetadata = metadata;
-            }
-
-            // Check if there is also an HTML5 video right inside this top frame
             const video = findVideoElement();
+
             if (video) {
                 if (attachedVideo !== video) {
-                    const handler = () => checkTopPage();
-                    ['play', 'playing', 'pause', 'timeupdate', 'seeked', 'ratechange'].forEach(ev => {
+                    const handler = () => checkTopPage(true);
+                    ['play', 'playing', 'pause', 'seeked', 'ratechange', 'ended'].forEach(ev => {
                         video.addEventListener(ev, handler);
                     });
                     attachedVideo = video;
@@ -268,26 +306,34 @@
                 const playbackChanged = !lastPlayback ||
                     lastPlayback.isPlaying !== playback.isPlaying ||
                     lastPlayback.isPaused !== playback.isPaused ||
-                    Math.abs(lastPlayback.progress - playback.progress) > 3;
+                    lastPlayback.duration !== playback.duration ||
+                    Math.abs(lastPlayback.progress - playback.progress) >= 2;
 
-                if (playbackChanged || metadataChanged) {
-                    chrome.runtime.sendMessage({
+                if (metadataChanged || playbackChanged) {
+                    safeSendMessage({
                         type: 'ANIME_UPDATE',
                         data: Object.assign({}, metadata, playback)
-                    }, () => {});
+                    });
+                    lastMetadata = metadata;
                     lastPlayback = playback;
                 }
+            } else if (metadataChanged) {
+                console.log('Top Frame: Detected anime metadata:', metadata.title, 'Ep:', metadata.episode);
+                safeSendMessage({
+                    type: 'ANIME_METADATA_UPDATE',
+                    data: metadata
+                });
+                lastMetadata = metadata;
             }
         }
 
-        setInterval(checkTopPage, 1500);
-        checkTopPage();
+        setInterval(() => checkTopPage(false), 2000);
+        window.addEventListener('popstate', () => checkTopPage(true));
+        checkTopPage(true);
 
         window.addEventListener('beforeunload', () => {
-            if (chrome.runtime && chrome.runtime.id && lastMetadata) {
-                try {
-                    chrome.runtime.sendMessage({ type: 'ANIME_CLEAR' });
-                } catch (e) {}
+            if (lastMetadata) {
+                safeSendMessage({ type: 'ANIME_CLEAR' });
             }
         });
 
@@ -298,16 +344,19 @@
         let lastPlayback = null;
         let attachedVideo = null;
 
-        function checkIframePlayback() {
+        function checkIframePlayback(forceSync = false) {
             if (!chrome.runtime || !chrome.runtime.id) return;
 
             const video = findVideoElement();
             if (!video) return;
 
+            // Ignore empty placeholder video tags until media metadata loads
+            if (!video.currentSrc && !video.src && !video.duration) return;
+
             if (attachedVideo !== video) {
                 console.log('Iframe Frame: Hooked player video element');
-                const handler = () => checkIframePlayback();
-                ['play', 'playing', 'pause', 'timeupdate', 'seeked', 'ratechange'].forEach(ev => {
+                const handler = () => checkIframePlayback(true);
+                ['play', 'playing', 'pause', 'seeked', 'ratechange', 'ended'].forEach(ev => {
                     video.addEventListener(ev, handler);
                 });
                 attachedVideo = video;
@@ -321,21 +370,23 @@
                 timestamp: Date.now()
             };
 
-            const playbackChanged = !lastPlayback ||
+            const playbackChanged = forceSync ||
+                !lastPlayback ||
                 lastPlayback.isPlaying !== playback.isPlaying ||
                 lastPlayback.isPaused !== playback.isPaused ||
-                Math.abs(lastPlayback.progress - playback.progress) > 3;
+                lastPlayback.duration !== playback.duration ||
+                Math.abs(lastPlayback.progress - playback.progress) >= 2;
 
             if (playbackChanged) {
-                chrome.runtime.sendMessage({
+                safeSendMessage({
                     type: 'ANIME_PLAYBACK_UPDATE',
                     data: playback
-                }, () => {});
+                });
                 lastPlayback = playback;
             }
         }
 
-        setInterval(checkIframePlayback, 1500);
-        checkIframePlayback();
+        setInterval(() => checkIframePlayback(false), 2000);
+        checkIframePlayback(true);
     }
 })();

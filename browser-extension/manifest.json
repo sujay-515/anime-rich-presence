@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Anime Rich Presence",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "description": "Show what anime you're watching on Discord with Rich Presence for Miruro & AnimePahe",
   "permissions": [
     "activeTab",
     "storage",
-    "scripting"
+    "scripting",
+    "alarms"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -19,9 +20,21 @@
       "all_frames": true
     }
   ],
+  "icons": {
+    "16": "icons/icon-dim-16.png",
+    "32": "icons/icon-dim-32.png",
+    "48": "icons/icon-dim-48.png",
+    "128": "icons/icon-dim-128.png"
+  },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Anime Rich Presence"
+    "default_title": "Anime Rich Presence • Checking connection...",
+    "default_icon": {
+      "16": "icons/icon-dim-16.png",
+      "32": "icons/icon-dim-32.png",
+      "48": "icons/icon-dim-48.png",
+      "128": "icons/icon-dim-128.png"
+    }
   },
   "background": {
     "service_worker": "background.js"
