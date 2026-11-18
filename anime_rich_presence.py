@@ -81,6 +81,7 @@ class EnhancedAnimeRichPresence:
             os.environ.get("DISCORD_STATUS_DISPLAY", "details").strip().lower(),
             StatusDisplayType.DETAILS,
         )
+        self.activity_name = os.environ.get("DISCORD_ACTIVITY_NAME", "Anime").strip() or None
 
         self.rpc = None
         self.rpc_loop = None
@@ -433,6 +434,7 @@ class EnhancedAnimeRichPresence:
             discord_activity = {
                 'activity_type': self.activity_type,
                 'status_display_type': StatusDisplayType.NAME if privacy_mode else self.status_display_type,
+                'name': self.activity_name,
                 'details': details_text,
                 'state': self.format_episode_state(
                     activity_data,
