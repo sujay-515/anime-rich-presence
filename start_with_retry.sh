@@ -4,8 +4,6 @@ cd "$DIR"
 
 if [ -f "$DIR/venv/bin/python" ]; then
     PYTHON="$DIR/venv/bin/python"
-elif [ -f "$DIR/../anime-rich-presence copy/venv/bin/python" ]; then
-    PYTHON="$DIR/../anime-rich-presence copy/venv/bin/python"
 else
     PYTHON="python3"
 fi
